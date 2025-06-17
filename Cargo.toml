@@ -1,0 +1,53 @@
+[package]
+name = "openlist-desktop-service"
+version = "1.0.0"
+edition = "2024"
+authors = ["Kuingsmile"]
+license = "GPL-3.0"
+repository = "https://github.com/Kuingsmile/service-demo.git"
+
+[[bin]]
+name = "openlist-desktop-service"
+path = "src/main.rs"
+
+[[bin]]
+name = "install-openlist-service"
+path = "src/install.rs"
+
+[[bin]]
+name = "uninstall-openlist-service"
+path = "src/uninstall.rs"
+
+[dependencies]
+anyhow = "1.0.98"
+log = "0.4.27"
+log4rs = "1.3"
+once_cell = "1.21.3"
+serde_json = "1.0.138"
+parking_lot = "0.12"
+windows-service = "0.8.0"
+tokio = { version = "1.45.0", features = ["full"] }
+serde = { version = "1.0.217", features = ["derive"] }
+sysinfo = "0.35.1"
+libc = "0.2.172"
+sha2 = "0.10.9"
+hex = "0.4.3"
+futures = "0.3.31"
+axum = "0.7.5"
+tower = "0.5.1"
+tower-http = { version = "0.6.1", features = ["cors"] }
+hyper = { version = "1.5.0", features = ["full"] }
+winapi = { version = "0.3", features = ["namedpipeapi", "handleapi", "winbase", "winnt", "winerror", "errhandlingapi", "accctrl", "aclapi", "securitybaseapi", "minwinbase", "wingdi"] }
+encoding_rs = "0.8.33"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10.72", features = ["vendored"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+interfaces = "0.0.9"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"

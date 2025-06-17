@@ -1,0 +1,12 @@
+[Unit]
+Description=OpenList Desktop Service
+After=network-online.target nftables.service iptables.service
+
+[Service]
+Type=simple
+ExecStart={}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

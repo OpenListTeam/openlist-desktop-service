@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+    <dict>
+        <key>Label</key>
+        <string>io.github.openlistteam.openlist.service</string>
+        <key>RunAtLoad</key>
+        <true />
+        <key>KeepAlive</key>
+        <true/>
+        <key>Program</key>
+        <string>{BUNDLE_PATH}/Contents/MacOS/openlist-desktop-service</string>
+        <key>ProgramArguments</key>
+        <array>
+            <string>{BUNDLE_PATH}/Contents/MacOS/openlist-desktop-service</string>
+        </array>
+        <key>StandardOutPath</key>
+        <string>/tmp/openlist-desktop-service.log</string>
+        <key>StandardErrorPath</key>
+        <string>/tmp/openlist-desktop-service.log</string>
+    </dict>
+</plist> 

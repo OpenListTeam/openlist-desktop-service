@@ -1,0 +1,136 @@
+name: Release MAC
+
+on: workflow_dispatch
+permissions: write-all
+
+jobs:
+  release-update:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            arch: arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            arch: x86_64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        if: matrix.os != 'ubuntu-latest'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Add Rust Target
+        if: matrix.os != 'ubuntu-latest'
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Setup macOS cross compilation
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          echo "CARGO_TARGET_$(echo ${{ matrix.target }} | tr '[:lower:]' '[:upper:]' | tr '-' '_')_LINKER=clang" >> $GITHUB_ENV
+          echo "CC_$(echo ${{ matrix.target }} | tr '-' '_')=clang" >> $GITHUB_ENV
+          echo "CXX_$(echo ${{ matrix.target }} | tr '-' '_')=clang++" >> $GITHUB_ENV
+          
+          # 设置 SDK 路径
+          if [ "${{ matrix.target }}" = "x86_64-apple-darwin" ]; then
+            echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
+            echo "MACOSX_DEPLOYMENT_TARGET=10.15" >> $GITHUB_ENV
+          elif [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
+            echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
+            echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> $GITHUB_ENV
+          fi
+
+      - name: Build
+        if: matrix.os != 'ubuntu-latest'
+        run: |
+          cargo clean
+          cargo build --release --target ${{ matrix.target }} --verbose
+
+      - name: Build
+        if: matrix.os == 'ubuntu-latest'
+        uses: ./.github/build-for-linux
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Update Tag
+        uses: richardsimko/update-tag@v1
+        with:
+          tag_name: ${{ matrix.target }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: CodeSign
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          # 设置证书
+          echo "${{ secrets.APPLE_CERTIFICATE }}" | base64 --decode > cert.p12
+          security create-keychain -p github-actions github-actions.keychain
+          security default-keychain -s github-actions.keychain
+          security unlock-keychain -p github-actions github-actions.keychain
+          security import cert.p12 -k github-actions.keychain -P "${{ secrets.APPLE_CERTIFICATE_PASSWORD }}" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k github-actions github-actions.keychain
+
+          echo "签名前验证架构:"
+          file target/${{ matrix.target }}/release/install-openlist-service
+          lipo -info target/${{ matrix.target }}/release/install-openlist-service || true
+
+          # 对服务程序进行签名
+          codesign --force \
+            -s "${{ secrets.APPLE_SIGNING_IDENTITY }}" \
+            --keychain github-actions.keychain \
+            --options runtime \
+            --timestamp \
+            --identifier "io.github.openlistteam.openlist.service" \
+            target/${{ matrix.target }}/release/openlist-desktop-service
+
+          # 对安装程序进行签名
+          codesign --force \
+            -s "${{ secrets.APPLE_SIGNING_IDENTITY }}" \
+            --keychain github-actions.keychain \
+            --options runtime \
+            --timestamp \
+            --identifier "io.github.openlistteam.openlist.service.install" \
+            target/${{ matrix.target }}/release/install-openlist-service
+
+          # 对卸载程序进行签名
+          codesign --force \
+            -s "${{ secrets.APPLE_SIGNING_IDENTITY }}" \
+            --keychain github-actions.keychain \
+            --options runtime \
+            --timestamp \
+            --identifier "io.github.openlistteam.openlist.service.uninstall" \
+            target/${{ matrix.target }}/release/uninstall-openlist-service
+
+          # 验证签名
+          codesign -dvv target/${{ matrix.target }}/release/openlist-desktop-service
+          codesign -d --entitlements /dev/stdout target/${{ matrix.target }}/release/openlist-desktop-service
+
+      - name: Release
+        if: matrix.os == 'windows-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ matrix.target }}
+          tag_name: ${{ matrix.target }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            target/${{ matrix.target }}/release/openlist-desktop-service.exe
+            target/${{ matrix.target }}/release/install-openlist-service.exe
+            target/${{ matrix.target }}/release/uninstall-openlist-service.exe
+
+      - name: Release
+        if: matrix.os != 'windows-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ matrix.target }}
+          tag_name: ${{ matrix.target }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            target/${{ matrix.target }}/release/openlist-desktop-service
+            target/${{ matrix.target }}/release/install-openlist-service
+            target/${{ matrix.target }}/release/uninstall-openlist-service

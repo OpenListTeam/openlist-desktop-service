@@ -1,10 +1,12 @@
-mod core;
+pub mod core;
 mod data;
 mod http_api;
 mod process;
 
+pub use core::get_service_log_file_path;
+
 use self::http_api::run_ipc_server;
-use log::{error, info, warn};
+use log::{error, info};
 use tokio::runtime::Runtime;
 
 #[cfg(target_os = "macos")]
@@ -26,41 +28,17 @@ use windows_service::{
 #[cfg(windows)]
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
-fn is_auto_start_enabled() -> bool {
-    std::env::var("OPENLIST_AUTO_START")
-        .map(|v| v.to_lowercase() == "true" || v == "1")
-        .unwrap_or(true)
-}
-
 async fn auto_start_core() {
     use self::core::CORE_MANAGER;
 
-    if !is_auto_start_enabled() {
-        info!("Auto-start is disabled by OPENLIST_AUTO_START environment variable");
-        return;
-    }
-
     info!("Attempting to auto-start core application...");
 
-    let core_manager = match CORE_MANAGER.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            error!(
-                "CORE_MANAGER mutex is poisoned during auto-start: {}",
-                poisoned
-            );
-            return;
-        }
-    };
+    let mut core_manager = CORE_MANAGER.lock();
 
-    match core_manager.start() {
-        Ok(_) => {
-            info!("Core application auto-started successfully");
-        }
-        Err(e) => {
-            warn!("Failed to auto-start core application: {}", e);
-            info!("Core application can be started manually via API: POST /api/v1/start");
-        }
+    if let Err(e) = core_manager.auto_start_processes() {
+        error!("Failed to auto-start processes: {}", e);
+    } else {
+        info!("Auto-start completed successfully");
     }
 }
 

@@ -2,44 +2,70 @@ mod openlistcore;
 
 use log::{LevelFilter, info};
 use log4rs::{
-    append::file::FileAppender,
+    append::rolling_file::{
+        RollingFileAppender,
+        policy::compound::{
+            CompoundPolicy, roll::fixed_window::FixedWindowRoller, trigger::size::SizeTrigger,
+        },
+    },
     config::{Appender, Config, Root},
     encode::pattern::PatternEncoder,
 };
+use openlistcore::get_service_log_file_path;
 use std::path::PathBuf;
 
 const SERVICE_NAME: &str = "OpenList Desktop Service";
-const LOG_FILE_NAME: &str = "openlist-desktop-service.log";
 
 fn setup_log_file() -> Result<(), Box<dyn std::error::Error>> {
     let log_paths = [
+        get_service_log_file_path().ok(),
         std::env::current_exe()
             .ok()
-            .and_then(|exe| exe.parent().map(|p| p.join(LOG_FILE_NAME))),
-        Some(PathBuf::from(LOG_FILE_NAME)),
-        Some(std::env::temp_dir().join(LOG_FILE_NAME)),
+            .and_then(|exe| exe.parent().map(|p| p.join("openlist-desktop-service.log"))),
+        Some(PathBuf::from("openlist-desktop-service.log")),
+        Some(std::env::temp_dir().join("openlist-desktop-service.log")),
     ];
-
     for log_path in log_paths.iter().flatten() {
-        if let Ok(file_appender) = FileAppender::builder()
-            .encoder(Box::new(PatternEncoder::new(
-                "[{d(%Y-%m-%d %H:%M:%S)}] [{l}] {m}{n}",
-            )))
-            .build(log_path)
-        {
-            if let Ok(config) = Config::builder()
-                .appender(Appender::builder().build("file", Box::new(file_appender)))
-                .build(Root::builder().appender("file").build(LevelFilter::Info))
+        if let Some(parent) = log_path.parent() {
+            if let Err(_) = std::fs::create_dir_all(parent) {
+                continue;
+            }
+        }
+
+        let log_pattern = format!("{}.{{}}", log_path.display());
+
+        let size_trigger = SizeTrigger::new(10 * 1024 * 1024);
+        if let Ok(fixed_window_roller) = FixedWindowRoller::builder().build(&log_pattern, 3) {
+            let compound_policy =
+                CompoundPolicy::new(Box::new(size_trigger), Box::new(fixed_window_roller));
+
+            if let Ok(rolling_appender) = RollingFileAppender::builder()
+                .encoder(Box::new(PatternEncoder::new(
+                    "[{d(%Y-%m-%d %H:%M:%S)}] [{l}] {m}{n}",
+                )))
+                .build(log_path, Box::new(compound_policy))
             {
-                if log4rs::init_config(config).is_ok() {
-                    info!("Log file: {:?}", log_path);
-                    return Ok(());
+                if let Ok(config) = Config::builder()
+                    .appender(Appender::builder().build("rolling_file", Box::new(rolling_appender)))
+                    .build(
+                        Root::builder()
+                            .appender("rolling_file")
+                            .build(LevelFilter::Info),
+                    )
+                {
+                    if log4rs::init_config(config).is_ok() {
+                        info!(
+                            "Rolling log file configured: {:?} (max size: 10MB, keep: 3 files)",
+                            log_path
+                        );
+                        return Ok(());
+                    }
                 }
             }
         }
     }
 
-    Err("Failed to initialize logging".into())
+    Err("Failed to initialize rolling file logging".into())
 }
 
 #[cfg(windows)]

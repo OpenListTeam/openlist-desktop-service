@@ -354,28 +354,6 @@ pub fn uninstall_old_service() -> Result<(), Error> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn remove_file_if_exists(file_path: &str, file_description: &str) -> Result<(), Error> {
-    use std::path::Path;
-
-    if Path::new(file_path).exists() {
-        std::fs::remove_file(file_path)
-            .map_err(|e| anyhow::anyhow!("Failed to remove {}: {}", file_description, e))?;
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn remove_directory_if_exists(dir_path: &str, dir_description: &str) -> Result<(), Error> {
-    use std::path::Path;
-
-    if Path::new(dir_path).exists() {
-        std::fs::remove_dir_all(dir_path)
-            .map_err(|e| anyhow::anyhow!("Failed to remove {}: {}", dir_description, e))?;
-    }
-    Ok(())
-}
-
 #[cfg(target_os = "linux")]
 pub fn detect_linux_init_system() -> &'static str {
     use std::path::Path;

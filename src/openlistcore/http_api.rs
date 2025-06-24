@@ -3,11 +3,11 @@ use crate::openlistcore::data::*;
 use anyhow::{Context, Result};
 use axum::{
     Router,
-    extract::{Request, State},
+    extract::{Query, Request, State},
     http::{Method, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Json},
-    routing::{get, post},
+    routing::{get, post, put, delete},
 };
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -24,24 +24,24 @@ const DEFAULT_HTTP_SERVER_PORT: u16 = 53211;
 const DEFAULT_API_KEY: &str = "yeM6PCcZGaCpapyBKAbjTp2YAhcku6cUr";
 
 fn get_api_key() -> String {
-    env::var("OPENLIST_API_KEY").unwrap_or_else(|_| {
-        warn!("Environment variable OPENLIST_API_KEY not set, using default API key");
-        info!("Recommend setting environment variable in production: set OPENLIST_API_KEY=your-secure-api-key");
+    env::var("PROCESS_MANAGER_API_KEY").unwrap_or_else(|_| {
+        warn!("Environment variable PROCESS_MANAGER_API_KEY not set, using default API key");
+        info!("Recommend setting environment variable in production: set PROCESS_MANAGER_API_KEY=your-secure-api-key");
         DEFAULT_API_KEY.to_string()
     })
 }
 
 fn get_server_host() -> String {
-    env::var("OPENLIST_HOST").unwrap_or_else(|_| DEFAULT_HTTP_SERVER_HOST.to_string())
+    env::var("PROCESS_MANAGER_HOST").unwrap_or_else(|_| DEFAULT_HTTP_SERVER_HOST.to_string())
 }
 
 fn get_server_port() -> u16 {
-    env::var("OPENLIST_PORT")
+    env::var("PROCESS_MANAGER_PORT")
         .ok()
         .and_then(|port_str| port_str.parse().ok())
         .unwrap_or_else(|| {
             info!(
-                "Environment variable OPENLIST_PORT not set or invalid, using default port: {}",
+                "Environment variable PROCESS_MANAGER_PORT not set or invalid, using default port: {}",
                 DEFAULT_HTTP_SERVER_PORT
             );
             DEFAULT_HTTP_SERVER_PORT
@@ -54,6 +54,11 @@ pub struct ApiResponse<T> {
     pub data: Option<T>,
     pub error: Option<String>,
     pub timestamp: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogQueryParams {
+    pub lines: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -120,15 +125,8 @@ fn error_response(error: String) -> Json<ApiResponse<()>> {
 async fn get_status() -> impl IntoResponse {
     info!("Handling GET /api/v1/status request");
 
-    let core_manager = match CORE_MANAGER.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            error!("CORE_MANAGER mutex is poisoned: {}", poisoned);
-            return error_response("Internal server error: mutex poisoned".to_string())
-                .into_response();
-        }
-    };
-
+    let core_manager = CORE_MANAGER.lock();
+    
     match core_manager.get_openlist_status() {
         Ok(status_data) => {
             debug!("Status retrieved successfully");
@@ -153,15 +151,8 @@ async fn get_status() -> impl IntoResponse {
 async fn get_service_version() -> impl IntoResponse {
     info!("Handling GET /api/v1/version request");
 
-    let core_manager = match CORE_MANAGER.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            error!("CORE_MANAGER mutex is poisoned: {}", poisoned);
-            return error_response("Internal server error: mutex poisoned".to_string())
-                .into_response();
-        }
-    };
-
+    let core_manager = CORE_MANAGER.lock();
+    
     match core_manager.get_version() {
         Ok(version_data) => {
             debug!("Version retrieved successfully");
@@ -174,63 +165,158 @@ async fn get_service_version() -> impl IntoResponse {
     }
 }
 
-async fn start_core_api(Json(payload): Json<StartBody>) -> impl IntoResponse {
-    info!("Handling POST /api/v1/start request");
+async fn create_process_api(Json(payload): Json<CreateProcessRequest>) -> impl IntoResponse {
+    info!("Handling POST /api/v1/processes request");
 
-    let core_manager = match CORE_MANAGER.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            error!("CORE_MANAGER mutex is poisoned: {}", poisoned);
-            return error_response("Internal server error: mutex poisoned".to_string())
-                .into_response();
-        }
-    };
-
-    match core_manager.start_openlist_service(payload) {
-        Ok(_) => {
-            info!("Core application started successfully");
-            success_response("Core application started successfully").into_response()
+    let mut core_manager = CORE_MANAGER.lock();
+    
+    match core_manager.create_process(payload) {
+        Ok(config) => {
+            info!("Process created successfully: {}", config.name);
+            success_response(config).into_response()
         }
         Err(err) => {
-            error!("Failed to start core application: {}", err);
-            error_response(format!("Failed to start core application: {}", err)).into_response()
+            error!("Failed to create process: {}", err);
+            error_response(format!("Failed to create process: {}", err)).into_response()
         }
     }
 }
 
-async fn stop_core_api() -> impl IntoResponse {
-    info!("Handling POST /api/v1/stop request");
+async fn list_processes_api() -> impl IntoResponse {
+    info!("Handling GET /api/v1/processes request");
 
-    let core_manager = match CORE_MANAGER.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            error!("CORE_MANAGER mutex is poisoned: {}", poisoned);
-            return error_response("Internal server error: mutex poisoned".to_string())
-                .into_response();
-        }
-    };
-
-    match core_manager.shutdown_openlist() {
-        Ok(_) => {
-            info!("Core application stopped successfully");
-            success_response("Core application stopped successfully").into_response()
+    let core_manager = CORE_MANAGER.lock();
+    
+    match core_manager.list_processes() {
+        Ok(processes) => {
+            debug!("Processes retrieved successfully");
+            success_response(processes).into_response()
         }
         Err(err) => {
-            error!("Failed to stop core application: {}", err);
-            error_response(format!("Failed to stop core application: {}", err)).into_response()
+            error!("Failed to list processes: {}", err);
+            error_response(format!("Failed to list processes: {}", err)).into_response()
         }
     }
 }
+
+async fn get_process_api(axum::extract::Path(id): axum::extract::Path<String>) -> impl IntoResponse {
+    info!("Handling GET /api/v1/processes/{} request", id);
+
+    let core_manager = CORE_MANAGER.lock();
+    
+    match core_manager.get_process(&id) {
+        Ok(process) => {
+            debug!("Process retrieved successfully: {}", process.name);
+            success_response(process).into_response()
+        }
+        Err(err) => {
+            error!("Failed to get process {}: {}", id, err);
+            error_response(format!("Failed to get process: {}", err)).into_response()
+        }
+    }
+}
+
+async fn update_process_api(
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(payload): Json<UpdateProcessRequest>
+) -> impl IntoResponse {
+    info!("Handling PUT /api/v1/processes/{} request", id);
+
+    let mut core_manager = CORE_MANAGER.lock();
+    
+    match core_manager.update_process(&id, payload) {
+        Ok(config) => {
+            info!("Process updated successfully: {}", config.name);
+            success_response(config).into_response()
+        }
+        Err(err) => {
+            error!("Failed to update process {}: {}", id, err);
+            error_response(format!("Failed to update process: {}", err)).into_response()
+        }
+    }
+}
+
+async fn delete_process_api(axum::extract::Path(id): axum::extract::Path<String>) -> impl IntoResponse {
+    info!("Handling DELETE /api/v1/processes/{} request", id);
+
+    let mut core_manager = CORE_MANAGER.lock();
+    
+    match core_manager.delete_process(&id) {
+        Ok(_) => {
+            info!("Process deleted successfully: {}", id);
+            success_response("Process deleted successfully").into_response()
+        }
+        Err(err) => {
+            error!("Failed to delete process {}: {}", id, err);
+            error_response(format!("Failed to delete process: {}", err)).into_response()
+        }
+    }
+}
+
+async fn start_process_api(axum::extract::Path(id): axum::extract::Path<String>) -> impl IntoResponse {
+    info!("Handling POST /api/v1/processes/{}/start request", id);
+
+    let mut core_manager = CORE_MANAGER.lock();
+    
+    match core_manager.start_process(&id) {
+        Ok(_) => {
+            info!("Process started successfully: {}", id);
+            success_response("Process started successfully").into_response()
+        }
+        Err(err) => {
+            error!("Failed to start process {}: {}", id, err);
+            error_response(format!("Failed to start process: {}", err)).into_response()
+        }
+    }
+}
+
+async fn stop_process_api(axum::extract::Path(id): axum::extract::Path<String>) -> impl IntoResponse {
+    info!("Handling POST /api/v1/processes/{}/stop request", id);
+
+    let mut core_manager = CORE_MANAGER.lock();
+    
+    match core_manager.stop_process(&id) {
+        Ok(_) => {
+            info!("Process stopped successfully: {}", id);
+            success_response("Process stopped successfully").into_response()
+        }
+        Err(err) => {
+            error!("Failed to stop process {}: {}", id, err);
+            error_response(format!("Failed to stop process: {}", err)).into_response()
+        }
+    }
+}
+
+async fn get_process_logs_api(
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Query(params): Query<LogQueryParams>
+) -> impl IntoResponse {
+    info!("Handling GET /api/v1/processes/{}/logs request", id);
+
+    let core_manager = CORE_MANAGER.lock();
+    
+    match core_manager.get_process_logs(&id, params.lines) {
+        Ok(logs) => {
+            debug!("Process logs retrieved successfully: {}", logs.name);
+            success_response(logs).into_response()
+        }
+        Err(err) => {
+            error!("Failed to get logs for process {}: {}", id, err);
+            error_response(format!("Failed to get process logs: {}", err)).into_response()
+        }
+    }
+}
+
+// Legacy endpoints for backward compatibility
 
 async fn stop_service() -> impl IntoResponse {
     info!("Handling POST /api/v1/shutdown request - shutting down entire service");
 
-    if let Ok(core_manager) = CORE_MANAGER.lock() {
-        if let Err(err) = core_manager.shutdown_openlist() {
+    {
+        let mut core_manager = CORE_MANAGER.lock();
+        if let Err(err) = core_manager.shutdown_all_processes() {
             warn!("Failed to gracefully stop core application: {}", err);
         }
-    } else {
-        warn!("CORE_MANAGER mutex is poisoned during shutdown");
     }
 
     tokio::spawn(async {
@@ -267,11 +353,21 @@ async fn health_check() -> impl IntoResponse {
 
 fn create_router(app_state: AppState) -> Router {
     let protected_routes = Router::new()
+        // Legacy endpoints for backward compatibility
         .route("/api/v1/status", get(get_status))
         .route("/api/v1/version", get(get_service_version))
-        .route("/api/v1/start", post(start_core_api))
-        .route("/api/v1/stop", post(stop_core_api))
         .route("/api/v1/shutdown", post(stop_service))
+        
+        // New process management endpoints
+        .route("/api/v1/processes", get(list_processes_api))
+        .route("/api/v1/processes", post(create_process_api))
+        .route("/api/v1/processes/:id", get(get_process_api))
+        .route("/api/v1/processes/:id", put(update_process_api))
+        .route("/api/v1/processes/:id", delete(delete_process_api))
+        .route("/api/v1/processes/:id/start", post(start_process_api))
+        .route("/api/v1/processes/:id/stop", post(stop_process_api))
+        .route("/api/v1/processes/:id/logs", get(get_process_logs_api))
+        
         .layer(middleware::from_fn_with_state(
             app_state.clone(),
             auth_middleware,
@@ -315,30 +411,33 @@ pub async fn run_ipc_server() -> Result<()> {
     info!("API Key: {}", api_key);
     info!("Environment variables configuration:");
     info!(
-        "  OPENLIST_HOST={} (default: {})",
+        "  PROCESS_MANAGER_HOST={} (default: {})",
         host, DEFAULT_HTTP_SERVER_HOST
     );
     info!(
-        "  OPENLIST_PORT={} (default: {})",
-        port, DEFAULT_HTTP_SERVER_PORT
+        "  PROCESS_MANAGER_PORT={} (default: {})",        port, DEFAULT_HTTP_SERVER_PORT
     );
-    info!("  OPENLIST_API_KEY=*** (default: use built-in key)");
-    info!(
-        "  OPENLIST_AUTO_START={} (default: true)",
-        std::env::var("OPENLIST_AUTO_START").unwrap_or_else(|_| "true".to_string())
-    );
+    info!("  PROCESS_MANAGER_API_KEY=*** (default: use built-in key)");
     info!("");
     info!("API endpoints:");
     info!("  GET  /health - Health check");
     info!("  GET  /api/v1/status - Get service status");
     info!("  GET  /api/v1/version - Get version information");
-    info!("  POST /api/v1/start - Start core application");
-    info!("  POST /api/v1/stop - Stop core application");
-    info!("  POST /api/v1/shutdown - Shutdown entire service");
+
+    info!("");
+    info!("Process management endpoints:");
+    info!("  GET    /api/v1/processes - List all processes");
+    info!("  POST   /api/v1/processes - Create new process");
+    info!("  GET    /api/v1/processes/:id - Get process details");
+    info!("  PUT    /api/v1/processes/:id - Update process");
+    info!("  DELETE /api/v1/processes/:id - Delete process");
+    info!("  POST   /api/v1/processes/:id/start - Start process");
+    info!("  POST   /api/v1/processes/:id/stop - Stop process");
+    info!("  GET    /api/v1/processes/:id/logs - Get process logs");
     info!("");
     info!("Usage examples:");
     info!(
-        "  curl -H \"Authorization: {}\" http://{}/api/v1/status",
+        "  curl -H \"Authorization: {}\" http://{}/api/v1/processes",
         api_key, addr
     );
     info!("  or");

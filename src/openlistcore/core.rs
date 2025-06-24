@@ -1,24 +1,157 @@
-use super::{
-    data::{CoreManager, OpenListStatus, StartBody, StatusInner, VersionResponse},
-    process,
-};
+use super::{data::*, process};
 use anyhow::{Context, Result, anyhow};
-use log::{error, info};
+use log::{error, info, warn};
 use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use std::{
-    fs::File,
-    sync::{Arc, Mutex, atomic::Ordering},
+    env,
+    fs::{File, OpenOptions},
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+    sync::atomic::Ordering,
+    time::{SystemTime, UNIX_EPOCH},
 };
+use uuid::Uuid;
 
 const SERVICE_NAME: &str = "OpenList Desktop Service";
-const SERVER_COMMAND: &str = "server";
 const INVALID_PID: i32 = -1;
+const CONFIG_FILE_NAME: &str = "process_configs.json";
+
+pub fn get_config_dir() -> Result<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(programdata) = env::var("PROGRAMDATA") {
+            Ok(PathBuf::from(programdata).join("openlist-service-config"))
+        } else {
+            Ok(PathBuf::from("C:\\ProgramData\\openlist-service-config"))
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = env::var("HOME").context("Could not determine home directory")?;
+        Ok(PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("openlist-service-config"))
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(xdg_config) = env::var("XDG_CONFIG_HOME") {
+            Ok(PathBuf::from(xdg_config).join("openlist-service-config"))
+        } else {
+            let home = env::var("HOME").context("Could not determine home directory")?;
+            Ok(PathBuf::from(home)
+                .join(".config")
+                .join("openlist-service-config"))
+        }
+    }
+}
+
+pub fn get_config_file_path() -> Result<PathBuf> {
+    let config_dir = get_config_dir()?;
+    Ok(config_dir.join(CONFIG_FILE_NAME))
+}
+
+pub fn get_service_log_file_path() -> Result<PathBuf> {
+    let config_dir = get_config_dir()?;
+    Ok(config_dir.join("openlist-desktop-service.log"))
+}
+
+fn get_current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+pub static CORE_MANAGER: Lazy<Mutex<CoreManager>> = Lazy::new(|| {
+    let mut manager = CoreManager::new();
+    if let Err(e) = manager.load_config() {
+        error!("Failed to load process configurations: {}", e);
+    }
+    Mutex::new(manager)
+});
 
 impl CoreManager {
     pub fn new() -> Self {
         CoreManager {
-            openlist_status: StatusInner::new(OpenListStatus::default()),
+            process_manager: StatusInner::new(ProcessManager::default()),
         }
+    }
+
+    pub fn load_config(&mut self) -> Result<()> {
+        let config_path = get_config_file_path()?;
+
+        if !config_path.exists() {
+            info!(
+                "No configuration file found at {:?}, starting with empty configuration",
+                config_path
+            );
+            return Ok(());
+        }
+
+        info!("Loading process configurations from {:?}", config_path);
+
+        let file = File::open(&config_path)
+            .with_context(|| format!("Failed to open config file: {:?}", config_path))?;
+
+        let reader = BufReader::new(file);
+        let configs: Vec<ProcessConfig> = serde_json::from_reader(reader)
+            .with_context(|| format!("Failed to parse config file: {:?}", config_path))?;
+
+        let process_manager = self.process_manager.inner.lock();
+        let mut processes = process_manager.processes.lock();
+        let mut runtime_states = process_manager.runtime_states.lock();
+
+        for config in configs {
+            processes.insert(config.id.clone(), config.clone());
+            runtime_states.insert(config.id.clone(), ProcessRuntime::default());
+            info!(
+                "Loaded process configuration: {} ({})",
+                config.name, config.id
+            );
+        }
+
+        info!(
+            "Successfully loaded {} process configurations",
+            processes.len()
+        );
+        Ok(())
+    }
+
+    pub fn save_config(&self) -> Result<()> {
+        let config_path = get_config_file_path()?;
+
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
+        }
+
+        let process_manager = self.process_manager.inner.lock();
+        let processes = process_manager.processes.lock();
+
+        let configs: Vec<ProcessConfig> = processes.values().cloned().collect();
+
+        info!(
+            "Saving {} process configurations to {:?}",
+            configs.len(),
+            config_path
+        );
+
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&config_path)
+            .with_context(|| format!("Failed to create config file: {:?}", config_path))?;
+
+        serde_json::to_writer_pretty(file, &configs)
+            .with_context(|| format!("Failed to write config file: {:?}", config_path))?;
+
+        info!("Successfully saved process configurations");
+        Ok(())
     }
 
     pub fn get_version(&self) -> Result<VersionResponse> {
@@ -27,49 +160,232 @@ impl CoreManager {
             version: env!("CARGO_PKG_VERSION").to_string(),
         })
     }
+    pub fn create_process(&mut self, request: CreateProcessRequest) -> Result<ProcessConfig> {
+        let process_manager = self.process_manager.inner.lock();
+        let mut processes = process_manager.processes.lock();
+        let mut runtime_states = process_manager.runtime_states.lock();
+        let id = Uuid::new_v4().to_string();
+        let timestamp = get_current_timestamp();
 
-    fn with_status<F, R>(&self, f: F) -> Result<R>
-    where
-        F: FnOnce(&OpenListStatus) -> Result<R>,
-    {
-        let status = self
-            .openlist_status
-            .inner
-            .lock()
-            .map_err(|e| anyhow!("Status lock failed: {}", e))?;
-        f(&status)
+        let log_file = if let Some(log_file) = request.log_file {
+            log_file
+        } else {
+            let config_dir = get_config_dir()?;
+            config_dir
+                .join(format!("process_{}.log", id))
+                .to_string_lossy()
+                .to_string()
+        };
+
+        let config = ProcessConfig {
+            id: id.clone(),
+            name: request.name,
+            bin_path: request.bin_path,
+            args: request.args.unwrap_or_default(),
+            log_file,
+            working_dir: request.working_dir,
+            env_vars: request.env_vars,
+            auto_restart: request.auto_restart.unwrap_or(false),
+            auto_start: request.auto_start.unwrap_or(false),
+            run_as_admin: request.run_as_admin.unwrap_or(false),
+            created_at: timestamp,
+            updated_at: timestamp,
+        };
+
+        if !Path::new(&config.bin_path).exists() {
+            return Err(anyhow!("Binary not found at: {}", config.bin_path));
+        }
+        processes.insert(id.clone(), config.clone());
+        runtime_states.insert(id.clone(), ProcessRuntime::default());
+
+        drop(processes);
+        drop(runtime_states);
+        drop(process_manager);
+
+        // Save configuration to disk
+        if let Err(e) = self.save_config() {
+            error!("Failed to save configuration after creating process: {}", e);
+        }
+
+        info!(
+            "Created process configuration: {} ({})",
+            config.name, config.id
+        );
+        Ok(config)
     }
 
-    fn with_config<F, R>(&self, f: F) -> Result<R>
-    where
-        F: FnOnce(&Option<StartBody>) -> Result<R>,
-    {
-        self.with_status(|status| {
-            let config = status
-                .runtime_config
-                .lock()
-                .map_err(|e| anyhow!("Config lock failed: {}", e))?;
-            f(&config)
-        })
+    pub fn update_process(
+        &mut self,
+        id: &str,
+        request: UpdateProcessRequest,
+    ) -> Result<ProcessConfig> {
+        let process_manager = self.process_manager.inner.lock();
+        let mut processes = process_manager.processes.lock();
+
+        let config = processes
+            .get_mut(id)
+            .ok_or_else(|| anyhow!("Process not found: {}", id))?;
+
+        if let Some(name) = request.name {
+            config.name = name;
+        }
+        if let Some(bin_path) = request.bin_path {
+            if !Path::new(&bin_path).exists() {
+                return Err(anyhow!("Binary not found at: {}", bin_path));
+            }
+            config.bin_path = bin_path;
+        }
+        if let Some(args) = request.args {
+            config.args = args;
+        }
+        if let Some(log_file) = request.log_file {
+            config.log_file = log_file;
+        }
+        if let Some(working_dir) = request.working_dir {
+            config.working_dir = Some(working_dir);
+        }
+        if let Some(env_vars) = request.env_vars {
+            config.env_vars = Some(env_vars);
+        }
+        if let Some(auto_restart) = request.auto_restart {
+            config.auto_restart = auto_restart;
+        }
+        if let Some(auto_start) = request.auto_start {
+            config.auto_start = auto_start;
+        }
+        if let Some(run_as_admin) = request.run_as_admin {
+            config.run_as_admin = run_as_admin;
+        }
+        config.updated_at = get_current_timestamp();
+
+        let updated_config = config.clone();
+
+        drop(processes);
+        drop(process_manager);
+
+        if let Err(e) = self.save_config() {
+            error!("Failed to save configuration after updating process: {}", e);
+        }
+
+        info!(
+            "Updated process configuration: {} ({})",
+            updated_config.name, updated_config.id
+        );
+        Ok(updated_config)
     }
 
-    pub fn get_status(&self) -> Result<StartBody> {
-        self.with_config(|config| match config.as_ref() {
-            Some(cfg) => Ok(cfg.clone()),
-            None => self.get_default_config(),
-        })
+    pub fn delete_process(&mut self, id: &str) -> Result<()> {
+        self.stop_process(id)?;
+
+        let process_manager = self.process_manager.inner.lock();
+        let mut processes = process_manager.processes.lock();
+        let mut runtime_states = process_manager.runtime_states.lock();
+        let config = processes
+            .remove(id)
+            .ok_or_else(|| anyhow!("Process not found: {}", id))?;
+        runtime_states.remove(id);
+
+        drop(processes);
+        drop(runtime_states);
+        drop(process_manager);
+
+        if let Err(e) = self.save_config() {
+            error!("Failed to save configuration after deleting process: {}", e);
+        }
+
+        info!(
+            "Deleted process configuration: {} ({})",
+            config.name, config.id
+        );
+        Ok(())
     }
 
-    pub fn start(&self) -> Result<()> {
-        info!("Starting OpenList service");
+    pub fn list_processes(&self) -> Result<Vec<ProcessStatus>> {
+        let process_manager = self.process_manager.inner.lock();
+        let processes = process_manager.processes.lock();
+        let runtime_states = process_manager.runtime_states.lock();
 
-        self.stop()?;
-        self.cleanup_other_processes()?;
+        let mut status_list = Vec::new();
 
-        let config = self.get_runtime_config()?;
+        for (id, config) in processes.iter() {
+            if let Some(runtime) = runtime_states.get(id) {
+                let status = ProcessStatus {
+                    id: id.clone(),
+                    name: config.name.clone(),
+                    is_running: runtime.is_running.load(Ordering::Relaxed),
+                    pid: {
+                        let pid = runtime.running_pid.load(Ordering::Relaxed);
+                        if pid > 0 { Some(pid as u32) } else { None }
+                    },
+                    started_at: runtime.started_at.lock().clone(),
+                    restart_count: runtime.restart_count.load(Ordering::Relaxed) as u32,
+                    last_exit_code: {
+                        let code = runtime.last_exit_code.load(Ordering::Relaxed);
+                        if code != 0 { Some(code) } else { None }
+                    },
+                    config: config.clone(),
+                };
+                status_list.push(status);
+            }
+        }
 
-        if !std::path::Path::new(&config.bin_path).exists() {
-            return Err(anyhow!("OpenList binary not found at: {}", config.bin_path));
+        Ok(status_list)
+    }
+
+    pub fn get_process(&self, id: &str) -> Result<ProcessStatus> {
+        let process_manager = self.process_manager.inner.lock();
+        let processes = process_manager.processes.lock();
+        let runtime_states = process_manager.runtime_states.lock();
+
+        let config = processes
+            .get(id)
+            .ok_or_else(|| anyhow!("Process not found: {}", id))?;
+
+        let runtime = runtime_states
+            .get(id)
+            .ok_or_else(|| anyhow!("Runtime state not found: {}", id))?;
+
+        let status = ProcessStatus {
+            id: id.to_string(),
+            name: config.name.clone(),
+            is_running: runtime.is_running.load(Ordering::Relaxed),
+            pid: {
+                let pid = runtime.running_pid.load(Ordering::Relaxed);
+                if pid > 0 { Some(pid as u32) } else { None }
+            },
+            started_at: runtime.started_at.lock().clone(),
+            restart_count: runtime.restart_count.load(Ordering::Relaxed) as u32,
+            last_exit_code: {
+                let code = runtime.last_exit_code.load(Ordering::Relaxed);
+                if code != 0 { Some(code) } else { None }
+            },
+            config: config.clone(),
+        };
+
+        Ok(status)
+    }
+
+    pub fn start_process(&mut self, id: &str) -> Result<()> {
+        info!("Starting process: {}", id);
+
+        let process_manager = self.process_manager.inner.lock();
+        let processes = process_manager.processes.lock();
+        let runtime_states = process_manager.runtime_states.lock();
+
+        let config = processes
+            .get(id)
+            .ok_or_else(|| anyhow!("Process not found: {}", id))?;
+
+        let runtime = runtime_states
+            .get(id)
+            .ok_or_else(|| anyhow!("Runtime state not found: {}", id))?;
+
+        if runtime.is_running.load(Ordering::Relaxed) {
+            return Err(anyhow!("Process {} is already running", config.name));
+        }
+
+        if !Path::new(&config.bin_path).exists() {
+            return Err(anyhow!("Binary not found at: {}", config.bin_path));
         }
 
         process::ensure_executable_permissions(&config.bin_path).with_context(|| {
@@ -80,310 +396,175 @@ impl CoreManager {
             .create(true)
             .append(true)
             .open(&config.log_file)
-            .with_context(|| format!("Failed to open log file: {}", config.log_file))?;
+            .with_context(|| format!("Failed to open log file: {}", config.log_file))?; // Spawn process
+        let args_strs: Vec<&str> = config.args.iter().map(|s| s.as_str()).collect();
+        let pid = process::spawn_process_with_privileges(
+            &config.bin_path,
+            &args_strs,
+            log_file,
+            config.run_as_admin,
+        )
+        .with_context(|| format!("Failed to spawn process: {}", config.bin_path))?;
 
-        let pid = process::spawn_process(&config.bin_path, &[SERVER_COMMAND], log_file)
-            .with_context(|| format!("Failed to spawn process: {}", config.bin_path))?;
+        runtime.is_running.store(true, Ordering::Relaxed);
+        runtime.running_pid.store(pid as i32, Ordering::Relaxed);
+        *runtime.started_at.lock() = Some(get_current_timestamp());
 
-        self.update_process_status(pid as i32, true)?;
-        info!("OpenList service started with PID: {}", pid);
+        info!("Process {} started with PID: {}", config.name, pid);
         Ok(())
     }
 
-    fn get_runtime_config(&self) -> Result<StartBody> {
-        self.with_config(|config| match config.as_ref() {
-            Some(cfg) => Ok(cfg.clone()),
-            None => {
-                let default_config = self.get_default_config()?;
-                Ok(default_config)
-            }
-        })
-    }
+    pub fn stop_process(&mut self, id: &str) -> Result<()> {
+        info!("Stopping process: {}", id);
 
-    fn get_default_config(&self) -> Result<StartBody> {
-        let exe_path = std::env::current_exe()
-            .map_err(|e| anyhow!("Failed to get current executable path: {}", e))?;
+        let process_manager = self.process_manager.inner.lock();
+        let processes = process_manager.processes.lock();
+        let runtime_states = process_manager.runtime_states.lock();
 
-        let exe_dir = exe_path
-            .parent()
-            .ok_or_else(|| anyhow!("Failed to get executable directory"))?;
+        let config = processes
+            .get(id)
+            .ok_or_else(|| anyhow!("Process not found: {}", id))?;
 
-        let (binary_name, target_dir) = if cfg!(target_os = "macos") {
-            let current_path_str = exe_path.to_string_lossy();
+        let runtime = runtime_states
+            .get(id)
+            .ok_or_else(|| anyhow!("Runtime state not found: {}", id))?;
 
-            if current_path_str.contains(
-                "/Library/Application Support/io.github.openlistteam.openlist.service.bundle/",
-            ) {
-                let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/unknown".to_string());
-                let config_file = std::path::Path::new(&home)
-                    .join("Library/Application Support/io.github.openlistteam.openlist/install_config.json");
+        let pid = runtime.running_pid.load(Ordering::Relaxed);
 
-                if let Ok(config_content) = std::fs::read_to_string(&config_file) {
-                    if let Ok(install_config) =
-                        serde_json::from_str::<serde_json::Value>(&config_content)
-                    {
-                        if let Some(install_dir) = install_config
-                            .get("install_directory")
-                            .and_then(|v| v.as_str())
-                        {
-                            let install_path = std::path::Path::new(install_dir);
-                            let bin_path = install_path.join("openlist");
-
-                            let home = std::env::var("HOME")
-                                .unwrap_or_else(|_| "/Users/unknown".to_string());
-                            let log_dir = std::path::Path::new(&home).join("Library/Logs/OpenList");
-
-                            if let Err(e) = std::fs::create_dir_all(&log_dir) {
-                                info!(
-                                    "Failed to create log directory {}: {}, falling back to install directory",
-                                    log_dir.display(),
-                                    e
-                                );
-                                let log_file = install_path.join("openlist.log");
-                                let bin_path_abs =
-                                    bin_path.canonicalize().unwrap_or_else(|_| bin_path.clone());
-                                let log_file_abs =
-                                    log_file.canonicalize().unwrap_or_else(|_| log_file.clone());
-
-                                info!("Using stored install directory: {}", install_dir);
-                                info!("Default config - Binary path: {}", bin_path_abs.display());
-                                info!("Default config - Log file: {}", log_file_abs.display());
-
-                                return Ok(StartBody {
-                                    bin_path: bin_path_abs.to_string_lossy().to_string(),
-                                    log_file: log_file_abs.to_string_lossy().to_string(),
-                                });
-                            }
-
-                            let log_file = log_dir.join("openlist.log");
-                            let bin_path_abs =
-                                bin_path.canonicalize().unwrap_or_else(|_| bin_path.clone());
-
-                            info!("Using stored install directory: {}", install_dir);
-                            info!("Default config - Binary path: {}", bin_path_abs.display());
-                            info!("Default config - Log file: {}", log_file.display());
-
-                            return Ok(StartBody {
-                                bin_path: bin_path_abs.to_string_lossy().to_string(),
-                                log_file: log_file.to_string_lossy().to_string(),
-                            });
-                        }
-                    }
-                } else {
-                    info!("Install config not found at: {}", config_file.display());
-                }
-                let common_paths = ["/usr/local/bin", "/usr/bin", "/opt/openlist/bin"];
-
-                for path_str in &common_paths {
-                    let path = std::path::Path::new(path_str);
-                    let openlist_path = path.join("openlist");
-                    if openlist_path.exists() {
-                        let home =
-                            std::env::var("HOME").unwrap_or_else(|_| "/Users/unknown".to_string());
-                        let log_dir = std::path::Path::new(&home).join("Library/Logs/OpenList");
-
-                        let log_file = if std::fs::create_dir_all(&log_dir).is_ok() {
-                            log_dir.join("openlist.log")
-                        } else {
-                            info!("Failed to create log directory, using temp directory");
-                            std::env::temp_dir().join("openlist.log")
-                        };
-
-                        let bin_path_abs = openlist_path
-                            .canonicalize()
-                            .unwrap_or_else(|_| openlist_path.clone());
-
-                        info!("Found openlist binary at: {}", bin_path_abs.display());
-                        info!("Default config - Binary path: {}", bin_path_abs.display());
-                        info!("Default config - Log file: {}", log_file.display());
-
-                        return Ok(StartBody {
-                            bin_path: bin_path_abs.to_string_lossy().to_string(),
-                            log_file: log_file.to_string_lossy().to_string(),
-                        });
-                    }
-                }
-
-                info!("Warning: Could not locate openlist binary, using current directory");
-                ("openlist", exe_dir)
-            } else {
-                ("openlist", exe_dir)
-            }
-        } else if cfg!(windows) {
-            ("openlist.exe", exe_dir)
-        } else {
-            ("openlist", exe_dir)
-        };
-
-        let bin_path = target_dir.join(binary_name);
-        let log_file = Self::get_log_file_path(target_dir);
-
-        let bin_path_abs = bin_path.canonicalize().unwrap_or_else(|_| bin_path.clone());
-
-        info!("Default config - Binary path: {}", bin_path_abs.display());
-        info!("Default config - Log file: {}", log_file.display());
-        info!(
-            "Default config - Working directory will be: {}",
-            target_dir.display()
-        );
-
-        Ok(StartBody {
-            bin_path: bin_path_abs.to_string_lossy().to_string(),
-            log_file: log_file.to_string_lossy().to_string(),
-        })
-    }
-
-    fn update_process_status(&self, pid: i32, is_running: bool) -> Result<()> {
-        self.with_status(|status| {
-            status.running_pid.store(pid, Ordering::Relaxed);
-            status.is_running.store(is_running, Ordering::Relaxed);
-            Ok(())
-        })
-    }
-
-    pub fn stop(&self) -> Result<()> {
-        let openlist_pid =
-            self.with_status(|status| Ok(status.running_pid.load(Ordering::Relaxed)))?;
-
-        if openlist_pid <= 0 {
-            info!("No OpenList process is currently running");
+        if pid <= 0 {
+            warn!("Process {} is not running", config.name);
             return Ok(());
         }
 
-        info!("Terminating OpenList process with PID: {}", openlist_pid);
+        let kill_result = process::kill_process(pid as u32);
 
-        let kill_result = process::kill_process(openlist_pid as u32);
-        self.update_process_status(INVALID_PID, false)?;
+        runtime.is_running.store(false, Ordering::Relaxed);
+        runtime.running_pid.store(INVALID_PID, Ordering::Relaxed);
+        *runtime.started_at.lock() = None;
 
         match kill_result {
-            Ok(_) => info!("Process {} terminated successfully", openlist_pid),
-            Err(e) => error!("Failed to terminate process {}: {}", openlist_pid, e),
+            Ok(_) => {
+                info!(
+                    "Process {} (PID: {}) terminated successfully",
+                    config.name, pid
+                );
+                runtime.last_exit_code.store(0, Ordering::Relaxed);
+            }
+            Err(e) => {
+                error!(
+                    "Failed to terminate process {} (PID: {}): {}",
+                    config.name, pid, e
+                );
+                runtime.last_exit_code.store(-1, Ordering::Relaxed);
+                return Err(anyhow!("Failed to stop process: {}", e));
+            }
         }
 
         Ok(())
     }
 
-    pub fn cleanup_other_processes(&self) -> Result<()> {
-        let current_pid = std::process::id();
-        let tracked_pid =
-            self.with_status(|status| Ok(status.running_pid.load(Ordering::Relaxed) as u32))?;
+    pub fn get_process_logs(&self, id: &str, lines: Option<usize>) -> Result<LogResponse> {
+        let process_manager = self.process_manager.inner.lock();
+        let processes = process_manager.processes.lock();
 
-        let process_pids = process::find_processes("openlist").unwrap_or_default();
+        let config = processes
+            .get(id)
+            .ok_or_else(|| anyhow!("Process not found: {}", id))?;
 
-        let terminated_count = process_pids
-            .into_iter()
-            .filter(|&pid| pid != current_pid && (tracked_pid == 0 || pid != tracked_pid))
-            .filter(|&pid| match process::kill_process(pid) {
-                Ok(_) => {
-                    info!("Terminated process {}", pid);
-                    true
-                }
-                Err(e) => {
-                    error!("Failed to terminate process {}: {}", pid, e);
-                    false
-                }
-            })
-            .count();
-
-        if terminated_count > 0 {
-            info!("Terminated {} other OpenList process(es)", terminated_count);
+        if !Path::new(&config.log_file).exists() {
+            return Ok(LogResponse {
+                id: id.to_string(),
+                name: config.name.clone(),
+                log_content: String::new(),
+                total_lines: 0,
+                fetched_lines: 0,
+            });
         }
 
-        Ok(())
-    }
+        let file = File::open(&config.log_file)
+            .with_context(|| format!("Failed to open log file: {}", config.log_file))?;
 
-    pub fn start_with_config(&self, body: StartBody) -> Result<()> {
-        info!("Starting OpenList service with configuration");
-        self.set_runtime_config(body)?;
-        self.stop()?;
-        self.start().context("Failed to start OpenList service")
-    }
+        let reader = BufReader::new(file);
+        let all_lines: Vec<String> = reader
+            .lines()
+            .collect::<Result<Vec<_>, _>>()
+            .with_context(|| format!("Failed to read log file: {}", config.log_file))?;
 
-    fn set_runtime_config(&self, config: StartBody) -> Result<()> {
-        self.with_status(|status| {
-            let mut runtime_config = status
-                .runtime_config
-                .lock()
-                .map_err(|e| anyhow!("Config lock failed: {}", e))?;
-            *runtime_config = Some(config);
-            Ok(())
+        let total_lines = all_lines.len();
+        let lines_to_fetch = lines.unwrap_or(100).min(total_lines);
+
+        let start_index = if total_lines > lines_to_fetch {
+            total_lines - lines_to_fetch
+        } else {
+            0
+        };
+
+        let log_content = all_lines[start_index..].join("\n");
+
+        Ok(LogResponse {
+            id: id.to_string(),
+            name: config.name.clone(),
+            log_content,
+            total_lines,
+            fetched_lines: lines_to_fetch,
         })
+    }
+    pub fn auto_start_processes(&mut self) -> Result<()> {
+        info!("Auto-starting configured processes...");
+
+        let process_ids: Vec<String> = {
+            let process_manager = self.process_manager.inner.lock();
+            let processes = process_manager.processes.lock();
+            processes
+                .iter()
+                .filter(|(_, config)| config.auto_start)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+
+        if process_ids.is_empty() {
+            info!("No processes configured for auto-start");
+            return Ok(());
+        }
+
+        info!(
+            "Found {} processes configured for auto-start",
+            process_ids.len()
+        );
+
+        for id in process_ids {
+            if let Err(e) = self.start_process(&id) {
+                error!("Failed to auto-start process {}: {}", id, e);
+            } else {
+                info!("Successfully auto-started process {}", id);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn shutdown_all_processes(&mut self) -> Result<()> {
+        let process_ids: Vec<String> = {
+            let process_manager = self.process_manager.inner.lock();
+            let processes = process_manager.processes.lock();
+            processes.keys().cloned().collect()
+        };
+
+        for id in process_ids {
+            if let Err(e) = self.stop_process(&id) {
+                error!("Failed to stop process {}: {}", id, e);
+            }
+        }
+
+        Ok(())
     }
 
     pub fn get_openlist_status(&self) -> Result<serde_json::Value> {
-        let is_running =
-            self.with_status(|status| Ok(status.is_running.load(Ordering::Relaxed)))?;
-        let running_pid =
-            self.with_status(|status| Ok(status.running_pid.load(Ordering::Relaxed)))?;
-        let config = self.get_status().unwrap_or_else(|_| StartBody::default());
-
+        let processes = self.list_processes()?;
         Ok(serde_json::json!({
-            "is_running": is_running,
-            "running_pid": running_pid,
-            "config": config
+            "processes": processes,
+            "total_processes": processes.len(),
+            "running_processes": processes.iter().filter(|p| p.is_running).count(),
         }))
     }
-
-    pub fn start_openlist_service(&self, body: StartBody) -> Result<()> {
-        self.start_with_config(body)
-    }
-
-    pub fn shutdown_openlist(&self) -> Result<()> {
-        self.shutdown()
-    }
-
-    pub fn shutdown(&self) -> Result<()> {
-        info!("Shutting down OpenList service");
-
-        if let Err(e) = self.stop() {
-            error!("Error during main process shutdown: {}", e);
-        }
-
-        if let Err(e) = self.cleanup_other_processes() {
-            error!("Error during cleanup of other processes: {}", e);
-        }
-
-        info!("OpenList service shutdown completed");
-        Ok(())
-    }
-
-    fn get_log_file_path(fallback_dir: &std::path::Path) -> std::path::PathBuf {
-        if cfg!(target_os = "macos") {
-            if let Ok(home) = std::env::var("HOME") {
-                let log_dir = std::path::Path::new(&home).join("Library/Logs/OpenList");
-                if std::fs::create_dir_all(&log_dir).is_ok() {
-                    return log_dir.join("openlist.log");
-                }
-            }
-        } else if cfg!(target_os = "linux") {
-            if let Ok(home) = std::env::var("HOME") {
-                let log_dir = std::path::Path::new(&home).join(".local/share/OpenList");
-                if std::fs::create_dir_all(&log_dir).is_ok() {
-                    return log_dir.join("openlist.log");
-                }
-            }
-        }
-
-        let log_file = fallback_dir.join("openlist.log");
-        if let Ok(test_file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_file)
-        {
-            drop(test_file);
-            return log_file;
-        }
-
-        info!("Cannot write to preferred log locations, using temp directory");
-        std::env::temp_dir().join("openlist.log")
-    }
 }
-
-impl Default for CoreManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub static CORE_MANAGER: Lazy<Arc<Mutex<CoreManager>>> =
-    Lazy::new(|| Arc::new(Mutex::new(CoreManager::default())));

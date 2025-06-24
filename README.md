@@ -1,208 +1,350 @@
-# OpenList Desktop Service
+# OpenList 桌面服务
 
-A cross-platform desktop service with RESTful HTTP API for process management.
+一个跨平台的桌面服务，通过 RESTful HTTP API 管理多个进程。此服务提供全面的进程管理功能，包括内置监控、日志记录和配置持久化。
 
-## Architecture
+## 功能特性
 
-This service consists of two components:
+- **跨平台支持**：Windows、Linux 和 macOS
+- **RESTful HTTP API**：通过 HTTP 端点完整的进程管理
+- **进程监控**：实时状态跟踪、PID 监控和重启计数
+- **自动启动支持**：服务启动时自动启动配置的进程
+- **权限提升**：需要时以管理员/root 权限运行进程
+- **配置持久化**：进程配置自动保存和恢复
+- **集中日志记录**：每个受管进程的独立日志文件，支持轮转
+- **API 认证**：简单而有效的 API 密钥认证
+- **服务集成**：原生支持 Windows 服务、systemd 和 launchd
 
-1. **HTTP API Service** - The persistent service that provides the REST API
-2. **Core Application** - The main OpenList application managed by the service
+## 系统架构
 
-The HTTP API service runs continuously and provides endpoints to start/stop the core application. When you call `/api/v1/stop`, it stops the core application but leaves the HTTP API service running so you can start it again later.
+服务由几个关键组件组成：
 
-## Features
+1. **HTTP API 服务器** - 提供进程管理的 RESTful 端点
+2. **核心进程管理器** - 处理进程生命周期、监控和配置
+3. **跨平台服务层** - 与特定操作系统的服务管理集成
+4. **配置系统** - 进程配置和设置的持久化存储
 
-- RESTful HTTP API for service control
-- Environment variable configuration
-- Simple API key authentication
-- Cross-platform support (Windows, Linux, macOS)
-- Process management and monitoring
+## 安装
 
-## Configuration
+### 快速安装
 
-The service can be configured using environment variables:
+从仓库下载最新版本并运行安装程序：
 
-| Variable              | Default     | Description                     |
-| --------------------- | ----------- | ------------------------------- |
-| `OPENLIST_HOST`       | `127.0.0.1` | API server host address         |
-| `OPENLIST_PORT`       | `53211`     | API server port                 |
-| `OPENLIST_API_KEY`    | (built-in)  | API authentication key          |
-| `OPENLIST_AUTO_START` | `true`      | Auto-start core on service boot |
-
-### Auto-Start Configuration
-
-By default, the service will automatically start the core application when the service starts. You can control this behavior:
-
-- `OPENLIST_AUTO_START=true` or `1`: Enable auto-start (default)
-- `OPENLIST_AUTO_START=false` or `0`: Disable auto-start, manual start required
-
-### Setting Environment Variables
-
-**Windows (PowerShell):**
+#### Windows
 
 ```powershell
-$env:OPENLIST_API_KEY="your-secure-api-key"
-$env:OPENLIST_PORT="8080"
-$env:OPENLIST_AUTO_START="true"
-./openlist-desktop-service.exe
+# 以管理员身份运行
+.\install-openlist-service.exe
 ```
 
-**Windows (CMD):**
-
-```cmd
-set OPENLIST_API_KEY=your-secure-api-key
-set OPENLIST_PORT=8080
-set OPENLIST_AUTO_START=true
-openlist-desktop-service.exe
-```
-
-**Linux/macOS:**
+#### Linux
 
 ```bash
-export OPENLIST_API_KEY="your-secure-api-key"
-export OPENLIST_PORT="8080"
-export OPENLIST_AUTO_START="true"
-./openlist-desktop-service
+# 使用 sudo 权限运行
+sudo ./install-openlist-service
 ```
 
-## API Endpoints
+#### macOS
 
-### Authentication
+```bash
+# 使用管理员权限运行
+sudo ./install-openlist-service
+```
 
-All protected endpoints require an API key in the `Authorization` header:
+### 从源码构建
+
+#### 先决条件
+
+- Rust 1.70+ 和 Cargo
+- 平台特定依赖：
+  - **Windows**：Visual Studio Build Tools 或 Visual Studio
+  - **Linux**：`build-essential`、`pkg-config`、`libssl-dev`
+  - **macOS**：Xcode 命令行工具
+
+#### 构建命令
+
+```bash
+# 克隆仓库
+git clone https://github.com/OpenListTeam/openlist-desktop-service.git
+cd openlist-desktop-service
+
+# 构建发布版本
+cargo build --release
+
+# 安装服务
+sudo ./target/release/install-openlist-service
+```
+
+## 配置
+
+### 环境变量
+
+可以使用以下环境变量配置服务：
+
+| 变量                      | 默认值      | 描述               |
+| ------------------------- | ----------- | ------------------ |
+| `PROCESS_MANAGER_HOST`    | `127.0.0.1` | API 服务器绑定地址 |
+| `PROCESS_MANAGER_PORT`    | `53211`     | API 服务器端口     |
+| `PROCESS_MANAGER_API_KEY` | (内置)      | API 认证密钥       |
+
+### 设置环境变量
+
+#### Windows (PowerShell)
+
+```powershell
+$env:PROCESS_MANAGER_API_KEY="your-secure-api-key"
+$env:PROCESS_MANAGER_PORT="8080"
+```
+
+#### Windows (命令提示符)
+
+```cmd
+set PROCESS_MANAGER_API_KEY=your-secure-api-key
+set PROCESS_MANAGER_PORT=8080
+```
+
+#### Linux/macOS
+
+```bash
+export PROCESS_MANAGER_API_KEY="your-secure-api-key"
+export PROCESS_MANAGER_PORT="8080"
+```
+
+## 使用方法
+
+### 启动服务
+
+服务在安装后会自动启动。您也可以手动控制：
+
+#### Windows
+
+```powershell
+# 启动服务
+Start-Service -Name "openlist_desktop_service"
+
+# 停止服务
+Stop-Service -Name "openlist_desktop_service"
+
+# 检查状态
+Get-Service -Name "openlist_desktop_service"
+```
+
+#### Linux (systemd)
+
+```bash
+# 启动服务
+sudo systemctl start openlist-desktop-service
+
+# 停止服务
+sudo systemctl stop openlist-desktop-service
+
+# 检查状态
+sudo systemctl status openlist-desktop-service
+```
+
+#### macOS
+
+```bash
+# 启动服务
+sudo launchctl start io.github.openlistteam.openlist.service
+
+# 停止服务
+sudo launchctl stop io.github.openlistteam.openlist.service
+```
+
+### API 使用
+
+服务运行后，您可以通过 HTTP API 与其交互：
+
+```bash
+# 检查（无需认证）
+curl http://127.0.0.1:53211/health
+
+# 列出所有进程
+curl -H "Authorization: your-api-key" http://127.0.0.1:53211/api/v1/processes
+
+# 获取服务版本
+curl -H "Authorization: your-api-key" http://127.0.0.1:53211/api/v1/version
+```
+
+## API 参考
+
+### 认证
+
+所有受保护的端点都需要在 `Authorization` 头中提供 API 密钥：
 
 ```bash
 Authorization: your-api-key
-# or
+# 或
 Authorization: Bearer your-api-key
 ```
 
-### Available Endpoints
+### 端点
 
-| Method | Endpoint          | Auth Required | Description             |
-| ------ | ----------------- | ------------- | ----------------------- |
-| GET    | `/health`         | No            | Health check            |
-| GET    | `/api/v1/status`  | Yes           | Get service status      |
-| GET    | `/api/v1/version` | Yes           | Get version information |
-| POST   | `/api/v1/start`   | Yes           | Start core application  |
-| POST   | `/api/v1/stop`    | Yes           | Stop core application   |
+| 方法   | 端点                          | 描述             |
+| ------ | ----------------------------- | ---------------- |
+| GET    | `/health`                     | 检查（无需认证） |
+| GET    | `/api/v1/status`              | 获取服务状态     |
+| GET    | `/api/v1/version`             | 获取版本信息     |
+| GET    | `/api/v1/processes`           | 列出所有进程     |
+| POST   | `/api/v1/processes`           | 创建新进程       |
+| GET    | `/api/v1/processes/:id`       | 获取进程详情     |
+| PUT    | `/api/v1/processes/:id`       | 更新进程配置     |
+| DELETE | `/api/v1/processes/:id`       | 删除进程         |
+| POST   | `/api/v1/processes/:id/start` | 启动进程         |
+| POST   | `/api/v1/processes/:id/stop`  | 停止进程         |
+| GET    | `/api/v1/processes/:id/logs`  | 获取进程日志     |
 
-### Usage Examples
+### 使用示例
 
-**Health Check (no auth required):**
-
-```bash
-curl http://127.0.0.1:53211/health
-```
-
-**Get Status:**
-
-```bash
-curl -H "Authorization: your-api-key" http://127.0.0.1:53211/api/v1/status
-```
-
-**Start Core Application:**
+#### 创建新进程
 
 ```bash
 curl -X POST -H "Authorization: your-api-key" \
      -H "Content-Type: application/json" \
-     -d '{"bin_path":"/path/to/binary","log_file":"/path/to/log"}' \
-     http://127.0.0.1:53211/api/v1/start
+     -d '{
+       "name": "我的应用程序",
+       "bin_path": "/path/to/executable",
+       "args": ["--port", "8080", "--verbose"],
+       "log_file": "/path/to/app.log",
+       "working_dir": "/path/to/workdir",
+       "auto_restart": false,
+       "auto_start": true,
+       "run_as_admin": false
+     }' \
+     http://127.0.0.1:53211/api/v1/processes
 ```
 
-**Stop Core Application:**
+#### 启动进程
 
 ```bash
 curl -X POST -H "Authorization: your-api-key" \
-     http://127.0.0.1:53211/api/v1/stop
+     http://127.0.0.1:53211/api/v1/processes/{process-id}/start
 ```
 
-## Building
+#### 获取进程日志
 
 ```bash
-cargo build --release
+curl -H "Authorization: your-api-key" \
+     "http://127.0.0.1:53211/api/v1/processes/{process-id}/logs?lines=50"
 ```
 
-## Installation
+### 响应格式
 
-The service supports automatic installation and management on different platforms:
+所有 API 响应都遵循这个标准格式：
 
-### Linux
-
-The service automatically detects your Linux init system and installs accordingly:
-
-- **systemd** (most common): Creates service file in `/etc/systemd/system/`
-- **OpenRC** (Alpine, Gentoo, etc.): Creates init script in `/etc/init.d/`
-
-**Install Service:**
-
-```bash
-sudo ./install-openlist-service
+```json
+{
+  "success": true,
+  "data": { ... },
+  "error": null,
+  "timestamp": 1640995200
+}
 ```
 
-**Uninstall Service:**
+## 进程配置
 
-```bash
-sudo ./uninstall-openlist-service
-```
+创建或更新进程时，您可以指定：
 
-#### Init System Detection
+- `name`：进程的显示名称
+- `bin_path`：可执行二进制文件的路径
+- `args`：命令行参数数组（可选）
+- `log_file`：日志文件路径（可选，如果未提供会自动生成）
+- `working_dir`：进程的工作目录（可选）
+- `env_vars`：环境变量键值对（可选）
+- `auto_restart`：是否在失败时自动重启（可选）
+- `auto_start`：服务启动时是否自动启动（可选）
+- `run_as_admin`：是否以管理员/root 权限运行（可选）
 
-The service automatically detects your init system by checking for:
+## 安全考虑
 
-- OpenRC: `/sbin/openrc` or `/usr/bin/rc-update`
-- systemd: Default fallback
+### API 密钥安全
 
-#### OpenRC Support
+- 在生产环境中更改默认 API 密钥
+- 使用环境变量安全地设置 API 密钥
+- 在生产环境中考虑使用反向代理配置 HTTPS
 
-For OpenRC-based systems (Alpine Linux, Gentoo, etc.), the service will:
+### 权限提升
 
-- Create an OpenRC init script at `/etc/init.d/openlist-desktop-service`
-- Add the service to the default runlevel using `rc-update`
-- Support standard OpenRC commands:
-  - `rc-service openlist-desktop-service start`
-  - `rc-service openlist-desktop-service stop`
-  - `rc-service openlist-desktop-service status`
+- `run_as_admin` 功能需要服务以足够的权限运行
+- 在 Windows 上，除非服务以管理员身份运行，否则可能出现 UAC 提示
+- 在 Linux/macOS 上，服务用户必须具有 sudo 权限才能无缝操作
+- 谨慎使用权限提升，仅在必要时使用
 
-#### systemd Support
+## 文件位置
 
-For systemd-based systems, the service will:
+### 配置文件
 
-- Create a systemd unit file at `/etc/systemd/system/openlist-desktop-service.service`
-- Enable the service using `systemctl enable`
-- Support standard systemctl commands:
-  - `systemctl start openlist-desktop-service`
-  - `systemctl stop openlist-desktop-service`
-  - `systemctl status openlist-desktop-service`
+- **Windows**：`%PROGRAMDATA%\openlist-service-config\process_configs.json`
+- **Linux**：`~/.config/openlist-service-config/process_configs.json`
+- **macOS**：`~/Library/Application Support/OpenListService/process_configs.json`
+
+### 日志文件
+
+- 服务日志存储在配置文件旁边
+- 单个进程日志存储在进程创建时指定的位置
+- 日志轮转自动处理（最大 10MB，保留 3 个文件）
+
+## 故障排除
+
+### 服务无法启动
+
+1. 检查服务日志中的错误消息
+2. 验证端口 53211 未被其他应用程序占用
+3. 确保配置目录具有适当的权限
+4. 在 Linux/macOS 上，检查 systemd/launchd 日志
+
+### 进程无法启动
+
+1. 验证二进制文件路径存在且可执行
+2. 检查工作目录是否存在
+3. 查看进程日志了解具体错误消息
+4. 确保目标二进制文件具有适当的权限
+
+### API 认证问题
+
+1. 验证 API 密钥设置正确
+2. 检查 Authorization 头格式
+3. 确保服务正在运行且可访问
+
+## 卸载
+
+要移除服务：
 
 ### Windows
 
-The service installs as a Windows Service that starts automatically with the system.
+```powershell
+# 以管理员身份运行
+.\uninstall-openlist-service.exe
+```
+
+### Linux
+
+```bash
+# 使用 sudo 权限运行
+sudo ./uninstall-openlist-service
+```
 
 ### macOS
 
-The service installs as a Launch Agent (user service) that runs in user space.
-
-- Service is installed in `~/Library/LaunchAgents/` (user-writable location)
-- Service binary is stored in `~/Library/Application Support/`
-
-**Install Service:**
-
 ```bash
-./install-openlist-service
+# 使用管理员权限运行
+sudo ./uninstall-openlist-service
 ```
 
-**Uninstall Service:**
+这将停止所有受管进程，移除服务注册，并清理配置文件。
 
-```bash
-./uninstall-openlist-service
-```
+## 贡献
 
-See the `install.rs` and `uninstall.rs` for platform-specific service installation details.
+1. Fork 仓库
+2. 创建功能分支
+3. 进行更改
+4. 如适用，添加测试
+5. 提交拉取请求
 
-### License
+## 许可证
 
-This project is inspired by the [clash-verge-service](https://github.com/clash-verge-rev/clash-verge-service) for the original idea and architecture. It is released under the GNU General Public License v3.0 (GPL-3.0).
+此项目采用 GPL-3.0 许可证 - 详情请参见 [LICENSE](LICENSE) 文件。
 
-The [LICENSE](LICENSE) file is included in the repository.
+## 支持
+
+如有问题、疑问或贡献，请访问 [GitHub 仓库](https://github.com/OpenListTeam/openlist-desktop-service)。

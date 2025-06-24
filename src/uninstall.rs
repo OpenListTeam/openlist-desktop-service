@@ -112,13 +112,10 @@ fn run_service_command(program: &str, args: &[&str], description: &str) {
 #[cfg(target_os = "macos")]
 fn main() -> Result<()> {
     use constants::*;
-    use openlist_desktop_service::utils::uninstall_old_service;
 
     println!("Starting macOS service uninstallation...");
 
     stop_all_processes();
-
-    let _ = uninstall_old_service();
 
     let plist_path = get_user_plist_path();
     let bundle_path = get_user_bundle_path();

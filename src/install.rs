@@ -79,11 +79,8 @@ mod macos {
     }
 
     pub fn install() -> Result<(), Error> {
-        use openlist_desktop_service::utils::uninstall_old_service;
-
         log_info("Starting macOS service installation...");
 
-        let _ = uninstall_old_service();
         let service_binary_path = get_service_binary_path()?;
         log_info(&format!(
             "Service binary found at: {}",

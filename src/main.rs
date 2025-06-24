@@ -1,4 +1,5 @@
 mod openlistcore;
+mod utils;
 
 use log::{LevelFilter, info};
 use log4rs::{

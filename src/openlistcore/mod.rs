@@ -9,8 +9,8 @@ use self::http_api::run_ipc_server;
 use log::{error, info};
 use tokio::runtime::Runtime;
 
-#[cfg(target_os = "macos")]
-use openlist_desktop_service::utils;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use crate::utils;
 
 #[cfg(windows)]
 use std::{ffi::OsString, time::Duration};
@@ -100,7 +100,7 @@ pub fn stop_service() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 pub fn stop_service() -> anyhow::Result<()> {
-    match openlist_desktop_service::utils::detect_linux_init_system() {
+    match utils::detect_linux_init_system() {
         "openrc" => {
             std::process::Command::new("rc-service")
                 .args(&["openlist-desktop-service", "stop"])

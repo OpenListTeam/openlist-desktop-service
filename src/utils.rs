@@ -349,11 +349,6 @@ fn print_debug_hints(status: &std::process::ExitStatus, stderr: &str, use_colors
     }
 }
 
-#[cfg(target_os = "macos")]
-pub fn uninstall_old_service() -> Result<(), Error> {
-    Ok(())
-}
-
 #[cfg(target_os = "linux")]
 pub fn detect_linux_init_system() -> &'static str {
     use std::path::Path;

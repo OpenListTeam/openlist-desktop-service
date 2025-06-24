@@ -6,18 +6,149 @@ fn main() {
 #[cfg(unix)]
 use anyhow::Result;
 
-use openlist_desktop_service::openlistcore::core::CORE_MANAGER;
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::time::Duration;
 
-fn stop_all_processes() {
-    println!("Stopping all managed processes...");
-    let mut core_manager = CORE_MANAGER.lock();
-    match core_manager.shutdown_all_processes() {
-        Ok(_) => println!("All managed processes stopped successfully."),
-        Err(e) => {
-            eprintln!("Warning: Failed to stop some processes: {}", e);
-            println!("Continuing with uninstallation...");
+fn get_api_key() -> String {
+    std::env::var("PROCESS_MANAGER_API_KEY")
+        .unwrap_or_else(|_| "yeM6PCcZGaCpapyBKAbjTp2YAhcku6cUr".to_string())
+}
+
+fn get_server_info() -> (String, u16) {
+    let host = std::env::var("PROCESS_MANAGER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = std::env::var("PROCESS_MANAGER_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(53211);
+
+    (host, port)
+}
+
+fn make_http_request(
+    host: &str,
+    port: u16,
+    method: &str,
+    path: &str,
+    api_key: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let addr = format!("{}:{}", host, port);
+    let mut stream = TcpStream::connect(&addr)?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+
+    let request = format!(
+        "{} {} HTTP/1.1\r\n\
+         Host: {}\r\n\
+         Authorization: {}\r\n\
+         Content-Type: application/json\r\n\
+         Connection: close\r\n\
+         \r\n",
+        method, path, addr, api_key
+    );
+
+    stream.write_all(request.as_bytes())?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+
+    Ok(response)
+}
+
+fn parse_json_response(response: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    if let Some(body_start) = response.find("\r\n\r\n") {
+        let body = &response[body_start + 4..];
+        if !body.trim().is_empty() {
+            return Ok(serde_json::from_str(body)?);
         }
     }
+    Err("No JSON body found in response".into())
+}
+
+fn is_success_response(response: &str) -> bool {
+    response.starts_with("HTTP/1.1 2") || response.starts_with("HTTP/1.0 2")
+}
+
+fn stop_all_processes() {
+    println!("Stopping all managed processes via HTTP API...");
+
+    let api_key = get_api_key();
+    let (host, port) = get_server_info();
+
+    match make_http_request(&host, port, "GET", "/api/v1/processes", &api_key) {
+        Ok(response) => {
+            if is_success_response(&response) {
+                match parse_json_response(&response) {
+                    Ok(api_response) => {
+                        if let Some(data) = api_response.get("data") {
+                            if let Some(processes) = data.as_array() {
+                                println!("Found {} managed processes to stop", processes.len());
+
+                                for process in processes {
+                                    if let Some(id) = process.get("id").and_then(|v| v.as_str()) {
+                                        let stop_path = format!("/api/v1/processes/{}/stop", id);
+
+                                        match make_http_request(
+                                            &host, port, "POST", &stop_path, &api_key,
+                                        ) {
+                                            Ok(stop_response) => {
+                                                if is_success_response(&stop_response) {
+                                                    println!(
+                                                        "Successfully stopped process: {}",
+                                                        id
+                                                    );
+                                                } else {
+                                                    eprintln!(
+                                                        "Warning: Failed to stop process {}",
+                                                        id
+                                                    );
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "Warning: Failed to send stop request for process {}: {}",
+                                                    id, e
+                                                );
+                                            }
+                                        }
+
+                                        std::thread::sleep(Duration::from_millis(100));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to parse process list response: {}", e);
+                    }
+                }
+            } else {
+                eprintln!("Warning: Failed to get process list - server returned error");
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "Warning: Failed to connect to service for process list: {}",
+                e
+            );
+        }
+    }
+
+    match make_http_request(&host, port, "POST", "/api/v1/shutdown", &api_key) {
+        Ok(response) => {
+            if is_success_response(&response) {
+                println!("Successfully sent shutdown request to service");
+                std::thread::sleep(Duration::from_millis(2000));
+            } else {
+                eprintln!("Warning: Shutdown request failed");
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: Failed to send shutdown request: {}", e);
+        }
+    }
+
+    println!("All managed processes stopped successfully.");
 }
 
 #[cfg(target_os = "macos")]

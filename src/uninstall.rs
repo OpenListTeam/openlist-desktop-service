@@ -194,14 +194,19 @@ mod constants {
 
     pub fn get_service_config_dir() -> std::path::PathBuf {
         use std::env;
-        if let Ok(xdg_config) = env::var("XDG_CONFIG_HOME") {
-            std::path::PathBuf::from(xdg_config).join("openlist-service-config")
-        } else {
-            let home = env::var("HOME").unwrap_or_else(|_| "/home/unknown".to_string());
-            std::path::PathBuf::from(home)
-                .join(".config")
-                .join("openlist-service-config")
-        }
+        let config_dir = [
+            env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|p| p.join("openlist-service-config"))),
+            Some(std::path::PathBuf::from("openlist-service-config")),
+            Some(std::env::temp_dir().join("openlist-service-config")),
+        ];
+        // the first is not None, use it
+        config_dir
+            .into_iter()
+            .find(|p| p.is_some())
+            .flatten()
+            .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/openlist-service-config"))
     }
 }
 

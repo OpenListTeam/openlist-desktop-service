@@ -38,25 +38,26 @@ pub fn get_config_dir() -> Result<PathBuf> {
 
     #[cfg(target_os = "linux")]
     {
-        if let Ok(xdg_config) = env::var("XDG_CONFIG_HOME") {
-            Ok(PathBuf::from(xdg_config).join("openlist-service-config"))
-        } else {
-            let home = env::var("HOME").context("Could not determine home directory")?;
-            Ok(PathBuf::from(home)
-                .join(".config")
-                .join("openlist-service-config"))
-        }
+        use std::env;
+        let config_dir = [
+            env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|p| p.join("openlist-service-config"))),
+            Some(std::path::PathBuf::from("openlist-service-config")),
+            Some(std::env::temp_dir().join("openlist-service-config")),
+        ];
+        // the first is not None, use it
+        config_dir
+            .into_iter()
+            .find(|p| p.is_some())
+            .ok_or_else(|| anyhow!("Failed to determine config directory"))
+            .map(|p| p.unwrap())
     }
 }
 
 pub fn get_config_file_path() -> Result<PathBuf> {
     let config_dir = get_config_dir()?;
     Ok(config_dir.join(CONFIG_FILE_NAME))
-}
-
-pub fn get_service_log_file_path() -> Result<PathBuf> {
-    let config_dir = get_config_dir()?;
-    Ok(config_dir.join("openlist-desktop-service.log"))
 }
 
 fn get_current_timestamp() -> u64 {
@@ -85,6 +86,12 @@ impl CoreManager {
         let config_path = get_config_file_path()?;
 
         if !config_path.exists() {
+            if let Some(parent) = config_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
+            }
+            File::create(&config_path)
+                .with_context(|| format!("Failed to create config file: {:?}", config_path))?;
             info!(
                 "No configuration file found at {:?}, starting with empty configuration",
                 config_path
@@ -533,6 +540,7 @@ impl CoreManager {
         );
 
         for id in process_ids {
+            //check if the process is already running
             if let Err(e) = self.start_process(&id) {
                 error!("Failed to auto-start process {}: {}", id, e);
             } else {

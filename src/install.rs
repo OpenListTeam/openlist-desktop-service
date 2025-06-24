@@ -1,15 +1,9 @@
 use std::env;
 use std::path::PathBuf;
 
-use log::info;
-
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn main() {
     panic!("This program is not intended to run on this platform.");
-}
-
-fn log_info(message: &str) {
-    info!("{}", message);
 }
 
 fn get_service_binary_path() -> anyhow::Result<PathBuf> {
@@ -79,27 +73,24 @@ mod macos {
     }
 
     pub fn install() -> Result<(), Error> {
-        log_info("Starting macOS service installation...");
+        println!("Starting macOS service installation...");
 
         let service_binary_path = get_service_binary_path()?;
-        log_info(&format!(
-            "Service binary found at: {}",
-            service_binary_path.display()
-        ));
+        println!("Service binary found at: {}", service_binary_path.display());
         let bundle_paths = install_service_bundle(&service_binary_path)?;
         save_install_config(&service_binary_path)?;
         install_launchd_plist()?;
         set_service_permissions(&bundle_paths)?;
         start_launchd_service()?;
 
-        log_info("macOS service installation completed successfully");
+        println!("macOS service installation completed successfully");
         Ok(())
     }
 
     fn install_service_bundle(
         service_binary_path: &std::path::Path,
     ) -> Result<ServicePaths, Error> {
-        log_info("Installing service bundle...");
+        println!("Installing service bundle...");
 
         let paths = ServicePaths::new();
         std::fs::create_dir_all(&paths.macos_path)
@@ -114,11 +105,11 @@ mod macos {
         )
         .map_err(|e| anyhow::anyhow!("Failed to write Info.plist: {}", e))?;
 
-        log_info("Service bundle installed successfully");
+        println!("Service bundle installed successfully");
         Ok(paths)
     }
     fn install_launchd_plist() -> Result<(), Error> {
-        log_info("Installing launchd plist...");
+        println!("Installing launchd plist...");
 
         let plist_path = get_user_plist_path();
         let plist_dir = std::path::Path::new(&plist_path).parent().unwrap();
@@ -135,11 +126,11 @@ mod macos {
         std::fs::write(&plist_path, plist_content)
             .map_err(|e| anyhow::anyhow!("Failed to write plist file: {}", e))?;
 
-        log_info("Launchd plist installed successfully");
+        println!("Launchd plist installed successfully");
         Ok(())
     }
     fn set_service_permissions(paths: &ServicePaths) -> Result<(), Error> {
-        log_info("Setting service permissions...");
+        println!("Setting service permissions...");
 
         let plist_path = get_user_plist_path();
         let permission_tasks = [
@@ -164,11 +155,11 @@ mod macos {
             run_command(cmd, &args).map_err(|e| anyhow::anyhow!("{}: {}", error_msg, e))?;
         }
 
-        log_info("Service permissions set successfully");
+        println!("Service permissions set successfully");
         Ok(())
     }
     fn start_launchd_service() -> Result<(), Error> {
-        log_info("Starting launchd service...");
+        println!("Starting launchd service...");
 
         let plist_path = get_user_plist_path();
 
@@ -180,11 +171,11 @@ mod macos {
         run_command("launchctl", &["start", SERVICE_IDENTIFIER])
             .map_err(|e| anyhow::anyhow!("Failed to start service: {}", e))?;
 
-        log_info("Launchd service started successfully");
+        println!("Launchd service started successfully");
         Ok(())
     }
     fn save_install_config(service_binary_path: &std::path::Path) -> Result<(), Error> {
-        log_info("Saving installation configuration...");
+        println!("Saving installation configuration...");
         let install_dir = service_binary_path
             .parent()
             .ok_or_else(|| anyhow::anyhow!("Failed to get installation directory"))?;
@@ -209,10 +200,10 @@ mod macos {
         let config_file = config_dir.join("install_config.json");
         std::fs::write(&config_file, serde_json::to_string_pretty(&config).unwrap())
             .map_err(|e| anyhow::anyhow!("Failed to write install config: {}", e))?;
-        log_info(&format!(
+        println!(
             "Installation configuration saved to: {}",
             config_file.display()
-        ));
+        );
         Ok(())
     }
 }
@@ -255,25 +246,19 @@ mod linux {
     }
     fn detect_init_system() -> InitSystem {
         if openlist_desktop_service::utils::detect_linux_init_system() == "openrc" {
-            log_info("Detected OpenRC init system");
+            println!("Detected OpenRC init system");
             InitSystem::OpenRC
         } else {
-            log_info("Detected systemd init system");
+            println!("Detected systemd init system");
             InitSystem::Systemd
         }
     }
 
     pub fn install() -> Result<(), Error> {
-        log_info(&format!(
-            "Starting Linux service installation for {}",
-            SERVICE_NAME
-        ));
+        println!("Starting Linux service installation for {}", SERVICE_NAME);
 
         let service_binary_path = get_service_binary_path()?;
-        log_info(&format!(
-            "Service binary found at: {}",
-            service_binary_path.display()
-        ));
+        println!("Service binary found at: {}", service_binary_path.display());
 
         let init_system = detect_init_system();
 
@@ -282,55 +267,50 @@ mod linux {
             InitSystem::OpenRC => install_openrc(&service_binary_path),
         }
     }
-
     fn install_systemd(service_binary_path: &Path) -> Result<(), Error> {
         match check_systemd_service_status()? {
             ServiceStatus::Active => {
-                log_info("Service is already running");
+                println!("Service is already running");
                 return Ok(());
             }
             ServiceStatus::Inactive | ServiceStatus::Activating | ServiceStatus::Failed => {
-                log_info("Service exists but is not running, attempting to start...");
+                println!("Service exists but is not running, attempting to start...");
                 start_existing_systemd_service()?;
                 return Ok(());
             }
             ServiceStatus::NotFound => {
-                log_info("Service not found, creating new systemd service...");
+                println!("Service not found, creating new systemd service...");
             }
         }
 
         create_systemd_service_unit_file(service_binary_path)?;
         install_and_start_systemd_service()?;
 
-        log_info("systemd service installation completed successfully");
+        println!("systemd service installation completed successfully");
         Ok(())
     }
-
     fn install_openrc(service_binary_path: &Path) -> Result<(), Error> {
         if check_openrc_service_exists()? {
             if check_openrc_service_running()? {
-                log_info("OpenRC service is already running");
+                println!("OpenRC service is already running");
                 return Ok(());
             } else {
-                log_info("OpenRC service exists but is not running, attempting to start...");
+                println!("OpenRC service exists but is not running, attempting to start...");
                 start_existing_openrc_service()?;
                 return Ok(());
             }
         }
 
-        log_info("OpenRC service not found, creating new service...");
+        println!("OpenRC service not found, creating new service...");
         create_openrc_service_script(service_binary_path)?;
         install_and_start_openrc_service()?;
 
-        log_info("OpenRC service installation completed successfully");
+        println!("OpenRC service installation completed successfully");
         Ok(())
     }
 
     fn check_systemd_service_status() -> Result<ServiceStatus, Error> {
-        log_info(&format!(
-            "Checking systemd service status for {}",
-            SERVICE_NAME
-        ));
+        println!("Checking systemd service status for {}", SERVICE_NAME);
 
         let status_output = std::process::Command::new("systemctl")
             .args(&["status", &format!("{}.service", SERVICE_NAME), "--no-pager"])
@@ -356,10 +336,7 @@ mod linux {
     }
 
     fn start_existing_systemd_service() -> Result<(), Error> {
-        log_info(&format!(
-            "Starting existing systemd service: {}",
-            SERVICE_NAME
-        ));
+        println!("Starting existing systemd service: {}", SERVICE_NAME);
 
         run_command(
             "systemctl",
@@ -376,10 +353,7 @@ mod linux {
 
     fn create_systemd_service_unit_file(binary_path: &Path) -> Result<(), Error> {
         let unit_file_path = format!("/etc/systemd/system/{}.service", SERVICE_NAME);
-        log_info(&format!(
-            "Creating systemd service unit file at: {}",
-            unit_file_path
-        ));
+        println!("Creating systemd service unit file at: {}", unit_file_path);
 
         let binary_path_str = binary_path
             .to_str()
@@ -398,19 +372,16 @@ mod linux {
             )
         })?;
 
-        log_info("systemd service unit file created successfully");
+        println!("systemd service unit file created successfully");
         Ok(())
     }
 
     fn install_and_start_systemd_service() -> Result<(), Error> {
-        log_info("Reloading systemd daemon...");
+        println!("Reloading systemd daemon...");
         run_command("systemctl", &["daemon-reload"])
             .map_err(|e| anyhow::anyhow!("Failed to reload systemd daemon: {}", e))?;
 
-        log_info(&format!(
-            "Enabling and starting systemd service: {}",
-            SERVICE_NAME
-        ));
+        println!("Enabling and starting systemd service: {}", SERVICE_NAME);
         run_command("systemctl", &["enable", SERVICE_NAME, "--now"]).map_err(|e| {
             anyhow::anyhow!(
                 "Failed to enable and start systemd service {}: {}",
@@ -419,10 +390,15 @@ mod linux {
             )
         })?;
 
-        log_info(&format!(
-            "systemd service {} has been enabled and started",
+        println!("systemd service {} has been enabled", SERVICE_NAME);
+
+        run_command("systemctl", &["start", SERVICE_NAME]).map_err(|e| {
+            anyhow::anyhow!("Failed to start systemd service {}: {}", SERVICE_NAME, e)
+        })?;
+        println!(
+            "systemd service {} has been started successfully",
             SERVICE_NAME
-        ));
+        );
         Ok(())
     }
 
@@ -432,10 +408,7 @@ mod linux {
     }
 
     fn check_openrc_service_running() -> Result<bool, Error> {
-        log_info(&format!(
-            "Checking OpenRC service status for {}",
-            SERVICE_NAME
-        ));
+        println!("Checking OpenRC service status for {}", SERVICE_NAME);
 
         let status_output = std::process::Command::new("rc-service")
             .args(&[SERVICE_NAME, "status"])
@@ -443,20 +416,17 @@ mod linux {
             .map_err(|e| anyhow::anyhow!("Failed to check OpenRC service status: {}", e))?;
 
         let is_running = status_output.status.success();
-        log_info(&format!(
+        println!(
             "OpenRC service {} is {}",
             SERVICE_NAME,
             if is_running { "running" } else { "not running" }
-        ));
+        );
 
         Ok(is_running)
     }
 
     fn start_existing_openrc_service() -> Result<(), Error> {
-        log_info(&format!(
-            "Starting existing OpenRC service: {}",
-            SERVICE_NAME
-        ));
+        println!("Starting existing OpenRC service: {}", SERVICE_NAME);
 
         run_command("rc-service", &[SERVICE_NAME, "start"]).map_err(|e| {
             anyhow::anyhow!(
@@ -469,10 +439,7 @@ mod linux {
 
     fn create_openrc_service_script(binary_path: &Path) -> Result<(), Error> {
         let script_path = format!("/etc/init.d/{}", SERVICE_NAME);
-        log_info(&format!(
-            "Creating OpenRC service script at: {}",
-            script_path
-        ));
+        println!("Creating OpenRC service script at: {}", script_path);
 
         let binary_path_str = binary_path
             .to_str()
@@ -497,28 +464,26 @@ mod linux {
         std::fs::set_permissions(&script_path, permissions)
             .map_err(|e| anyhow::anyhow!("Failed to set script permissions: {}", e))?;
 
-        log_info("OpenRC service script created successfully");
+        println!("OpenRC service script created successfully");
         Ok(())
     }
 
     fn install_and_start_openrc_service() -> Result<(), Error> {
-        log_info(&format!(
-            "Adding OpenRC service {} to default runlevel",
-            SERVICE_NAME
-        ));
+        println!("Adding OpenRC service {} to default runlevel", SERVICE_NAME);
+
         run_command("rc-update", &["add", SERVICE_NAME, "default"]).map_err(|e| {
             anyhow::anyhow!("Failed to add OpenRC service to default runlevel: {}", e)
         })?;
 
-        log_info(&format!("Starting OpenRC service: {}", SERVICE_NAME));
+        println!("Starting OpenRC service: {}", SERVICE_NAME);
         run_command("rc-service", &[SERVICE_NAME, "start"]).map_err(|e| {
             anyhow::anyhow!("Failed to start OpenRC service {}: {}", SERVICE_NAME, e)
         })?;
 
-        log_info(&format!(
+        println!(
             "OpenRC service {} has been added to default runlevel and started",
             SERVICE_NAME
-        ));
+        );
         Ok(())
     }
 }
@@ -541,17 +506,14 @@ mod windows {
         "OpenList Desktop Service helps to launch openlist application";
 
     pub fn install() -> windows_service::Result<()> {
-        log_info("Starting Windows service installation...");
+        println!("Starting Windows service installation...");
 
         let service_binary_path = get_service_binary_path().map_err(|_| {
-            log_info("Failed to get service binary path");
+            println!("Failed to get service binary path");
             std::process::exit(1);
         })?;
 
-        log_info(&format!(
-            "Service binary found at: {}",
-            service_binary_path.display()
-        ));
+        println!("Service binary found at: {}", service_binary_path.display());
 
         let service_manager = create_service_manager()?;
 
@@ -561,7 +523,7 @@ mod windows {
         }
 
         create_new_service(&service_manager, service_binary_path)?;
-        log_info("Service installation completed successfully");
+        println!("Service installation completed successfully");
         Ok(())
     }
 
@@ -582,11 +544,11 @@ mod windows {
 
         match service_manager.open_service(SERVICE_NAME, service_access) {
             Ok(service) => {
-                log_info("Service already exists, checking status...");
+                println!("Service already exists, checking status...");
                 Ok(Some(service))
             }
             Err(_) => {
-                log_info("Service does not exist, creating new service...");
+                println!("Service does not exist, creating new service...");
                 Ok(None)
             }
         }
@@ -597,32 +559,32 @@ mod windows {
     ) -> windows_service::Result<()> {
         match service.query_status() {
             Ok(status) => {
-                log_info(&format!("Service status: {:?}", status.current_state));
+                println!("Service status: {:?}", status.current_state);
 
                 match status.current_state {
                     ServiceState::Running => {
-                        log_info("Service is already running");
+                        println!("Service is already running");
                         return Ok(());
                     }
                     ServiceState::StartPending => {
-                        log_info("Service is starting...");
+                        println!("Service is starting...");
                         return Ok(());
                     }
                     ServiceState::StopPending => {
-                        log_info("Service is stopping, waiting and then starting...");
+                        println!("Service is stopping, waiting and then starting...");
                         std::thread::sleep(std::time::Duration::from_millis(1000));
                     }
                     _ => {
-                        log_info("Starting existing service...");
+                        println!("Starting existing service...");
                     }
                 }
                 service.start(&Vec::<&OsStr>::new())
             }
             Err(e) => {
-                log_info(&format!(
+                println!(
                     "Failed to query service status: {:?}, attempting to start anyway",
                     e
-                ));
+                );
                 let _ = service.start(&Vec::<&OsStr>::new());
                 Ok(())
             }
@@ -646,27 +608,24 @@ mod windows {
             account_password: None,
         };
 
-        log_info(&format!(
+        println!(
             "Creating service with configuration: {}",
             SERVICE_DISPLAY_NAME
-        ));
+        );
 
         let create_access =
             ServiceAccess::CHANGE_CONFIG | ServiceAccess::START | ServiceAccess::QUERY_STATUS;
         let service = service_manager.create_service(&service_info, create_access)?;
 
-        log_info("Service created successfully");
+        println!("Service created successfully");
 
         if let Err(e) = service.set_description(SERVICE_DESCRIPTION) {
-            log_info(&format!(
-                "Warning: Failed to set service description: {:?}",
-                e
-            ));
+            println!("Warning: Failed to set service description: {:?}", e);
         }
 
-        log_info("Starting service...");
+        println!("Starting service...");
         service.start(&Vec::<&OsStr>::new())?;
-        log_info("Service started successfully");
+        println!("Service started successfully");
 
         Ok(())
     }

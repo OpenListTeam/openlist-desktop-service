@@ -272,12 +272,6 @@ When creating or updating processes, you can specify:
 
 ## File Locations
 
-### Configuration Files
-
-- **Windows**: `%PROGRAMDATA%\openlist-service-config\process_configs.json`
-- **Linux**: `~/.config/openlist-service-config/process_configs.json`
-- **macOS**: `~/Library/Application Support/OpenListService/process_configs.json`
-
 ### Log Files
 
 - Service logs are stored alongside configuration files

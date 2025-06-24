@@ -201,7 +201,6 @@ pub fn spawn_process_with_privileges(
         } else {
             info!("Running process without elevated privileges on Linux");
         }
-
         let child = Command::new(&command_to_run)
             .args(&args_to_run)
             .current_dir(working_dir)

@@ -3,8 +3,6 @@ mod data;
 mod http_api;
 mod process;
 
-pub use core::get_service_log_file_path;
-
 use self::http_api::run_ipc_server;
 use log::{error, info};
 use tokio::runtime::Runtime;

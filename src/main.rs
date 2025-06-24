@@ -12,14 +12,12 @@ use log4rs::{
     config::{Appender, Config, Root},
     encode::pattern::PatternEncoder,
 };
-use openlistcore::get_service_log_file_path;
 use std::path::PathBuf;
 
 const SERVICE_NAME: &str = "OpenList Desktop Service";
 
 fn setup_log_file() -> Result<(), Box<dyn std::error::Error>> {
     let log_paths = [
-        get_service_log_file_path().ok(),
         std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(|p| p.join("openlist-desktop-service.log"))),

@@ -272,12 +272,6 @@ curl -H "Authorization: your-api-key" \
 
 ## 文件位置
 
-### 配置文件
-
-- **Windows**：`%PROGRAMDATA%\openlist-service-config\process_configs.json`
-- **Linux**：`~/.config/openlist-service-config/process_configs.json`
-- **macOS**：`~/Library/Application Support/OpenListService/process_configs.json`
-
 ### 日志文件
 
 - 服务日志存储在配置文件旁边

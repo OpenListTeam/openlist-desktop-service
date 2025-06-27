@@ -34,7 +34,7 @@ async fn auto_start_core() {
     let mut core_manager = CORE_MANAGER.lock();
 
     if let Err(e) = core_manager.auto_start_processes() {
-        error!("Failed to auto-start processes: {}", e);
+        error!("Failed to auto-start processes: {e}");
     } else {
         info!("Auto-start completed successfully");
     }
@@ -71,7 +71,7 @@ pub async fn run_service() -> anyhow::Result<()> {
     });
 
     if let Err(err) = run_ipc_server().await {
-        error!("HTTP API server error: {}", err);
+        error!("HTTP API server error: {err}");
     }
 
     Ok(())
@@ -101,7 +101,7 @@ pub fn stop_service() -> anyhow::Result<()> {
     match utils::detect_linux_init_system() {
         "openrc" => {
             std::process::Command::new("rc-service")
-                .args(&["openlist-desktop-service", "stop"])
+                .args(["openlist-desktop-service", "stop"])
                 .output()
                 .map_err(|e| anyhow::anyhow!("Failed to execute rc-service stop: {}", e))?;
         }
@@ -131,7 +131,7 @@ pub fn main() -> Result<()> {
     service_dispatcher::start("openlist_desktop_service", ffi_service_main)
 }
 
-#[cfg(not(windows))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn main() {
     if let Ok(rt) = Runtime::new() {
         rt.block_on(async {

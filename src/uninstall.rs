@@ -3,7 +3,7 @@ fn main() {
     panic!("This program is not intended to run on this platform.");
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use anyhow::Result;
 
 use std::io::{Read, Write};
@@ -32,19 +32,18 @@ fn make_http_request(
     path: &str,
     api_key: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{host}:{port}");
     let mut stream = TcpStream::connect(&addr)?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
 
     let request = format!(
-        "{} {} HTTP/1.1\r\n\
-         Host: {}\r\n\
-         Authorization: {}\r\n\
+        "{method} {path} HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Authorization: {api_key}\r\n\
          Content-Type: application/json\r\n\
          Connection: close\r\n\
-         \r\n",
-        method, path, addr, api_key
+         \r\n"
     );
 
     stream.write_all(request.as_bytes())?;
@@ -86,28 +85,23 @@ fn stop_all_processes() {
 
                                 for process in processes {
                                     if let Some(id) = process.get("id").and_then(|v| v.as_str()) {
-                                        let stop_path = format!("/api/v1/processes/{}/stop", id);
+                                        let stop_path = format!("/api/v1/processes/{id}/stop");
 
                                         match make_http_request(
                                             &host, port, "POST", &stop_path, &api_key,
                                         ) {
                                             Ok(stop_response) => {
                                                 if is_success_response(&stop_response) {
-                                                    println!(
-                                                        "Successfully stopped process: {}",
-                                                        id
-                                                    );
+                                                    println!("Successfully stopped process: {id}");
                                                 } else {
                                                     eprintln!(
-                                                        "Warning: Failed to stop process {}",
-                                                        id
+                                                        "Warning: Failed to stop process {id}"
                                                     );
                                                 }
                                             }
                                             Err(e) => {
                                                 eprintln!(
-                                                    "Warning: Failed to send stop request for process {}: {}",
-                                                    id, e
+                                                    "Warning: Failed to send stop request for process {id}: {e}"
                                                 );
                                             }
                                         }
@@ -119,7 +113,7 @@ fn stop_all_processes() {
                         }
                     }
                     Err(e) => {
-                        eprintln!("Warning: Failed to parse process list response: {}", e);
+                        eprintln!("Warning: Failed to parse process list response: {e}");
                     }
                 }
             } else {
@@ -127,10 +121,7 @@ fn stop_all_processes() {
             }
         }
         Err(e) => {
-            eprintln!(
-                "Warning: Failed to connect to service for process list: {}",
-                e
-            );
+            eprintln!("Warning: Failed to connect to service for process list: {e}");
         }
     }
 
@@ -144,7 +135,7 @@ fn stop_all_processes() {
             }
         }
         Err(e) => {
-            eprintln!("Warning: Failed to send shutdown request: {}", e);
+            eprintln!("Warning: Failed to send shutdown request: {e}");
         }
     }
 
@@ -157,34 +148,24 @@ mod constants {
 
     pub fn get_user_bundle_path() -> String {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/unknown".to_string());
-        format!(
-            "{}/Library/Application Support/io.github.openlistteam.openlist.service.bundle",
-            home
-        )
+        format!("{home}/Library/Application Support/io.github.openlistteam.openlist.service.bundle")
     }
 
     pub fn get_user_plist_path() -> String {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/unknown".to_string());
-        format!(
-            "{}/Library/LaunchAgents/io.github.openlistteam.openlist.service.plist",
-            home
-        )
+        format!("{home}/Library/LaunchAgents/io.github.openlistteam.openlist.service.plist")
     }
 
     pub fn get_user_config_path() -> String {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/unknown".to_string());
         format!(
-            "{}/Library/Application Support/io.github.openlistteam.openlist/install_config.json",
-            home
+            "{home}/Library/Application Support/io.github.openlistteam.openlist/install_config.json"
         )
     }
 
     pub fn get_service_config_dir() -> String {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/unknown".to_string());
-        format!(
-            "{}/Library/Application Support/openlist-service-config",
-            home
-        )
+        format!("{home}/Library/Application Support/openlist-service-config")
     }
 }
 
@@ -215,7 +196,7 @@ mod constants {
     pub const SERVICE_NAME: &str = "openlist_desktop_service";
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn remove_path_if_exists(path: &str, description: &str, is_dir: bool) -> Result<()> {
     use std::path::Path;
 
@@ -228,20 +209,20 @@ fn remove_path_if_exists(path: &str, description: &str, is_dir: bool) -> Result<
             std::fs::remove_file(path)
                 .map_err(|e| anyhow::anyhow!("Failed to remove {}: {}", description, e))?;
         }
-        println!("Removed {}: {}", description, path);
+        println!("Removed {description}: {path}");
     } else {
-        println!("{} not found: {}", description, path);
+        println!("{description} not found: {path}");
     }
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run_service_command(program: &str, args: &[&str], description: &str) {
     use openlist_desktop_service::utils::run_command;
 
-    println!("{}...", description);
+    println!("{description}...");
     if let Err(e) = run_command(program, args) {
-        eprintln!("Warning: {}: {}", description, e);
+        eprintln!("Warning: {description}: {e}");
     }
 }
 
@@ -322,7 +303,7 @@ fn main() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn uninstall_systemd_service(service_name: &str) -> Result<()> {
-    let service_name_with_ext = format!("{}.service", service_name);
+    let service_name_with_ext = format!("{service_name}.service");
 
     run_service_command(
         "systemctl",
@@ -335,7 +316,7 @@ fn uninstall_systemd_service(service_name: &str) -> Result<()> {
         "Disabling systemd service",
     );
 
-    let unit_file = format!("/etc/systemd/system/{}", service_name_with_ext);
+    let unit_file = format!("/etc/systemd/system/{service_name_with_ext}");
     remove_path_if_exists(&unit_file, "systemd service file", false)?;
 
     run_service_command("systemctl", &["daemon-reload"], "Reloading systemd daemon");
@@ -356,7 +337,7 @@ fn uninstall_openrc_service(service_name: &str) -> Result<()> {
         "Removing OpenRC service from default runlevel",
     );
 
-    let script_file = format!("/etc/init.d/{}", service_name);
+    let script_file = format!("/etc/init.d/{service_name}");
     remove_path_if_exists(&script_file, "OpenRC service script", false)?;
 
     Ok(())
@@ -378,7 +359,7 @@ fn main() -> windows_service::Result<()> {
     let manager_access = ServiceManagerAccess::CONNECT;
     let service_manager =
         ServiceManager::local_computer(None::<&str>, manager_access).map_err(|e| {
-            eprintln!("Failed to connect to service manager: {}", e);
+            eprintln!("Failed to connect to service manager: {e}");
             e
         })?;
 
@@ -386,7 +367,7 @@ fn main() -> windows_service::Result<()> {
     let service = service_manager
         .open_service(SERVICE_NAME, service_access)
         .map_err(|e| {
-            eprintln!("Failed to open service '{}': {}", SERVICE_NAME, e);
+            eprintln!("Failed to open service '{SERVICE_NAME}': {e}");
             e
         })?;
     let service_status = service.query_status()?;
@@ -424,7 +405,7 @@ fn main() -> windows_service::Result<()> {
                 }
             }
             Err(err) => {
-                eprintln!("Warning: Failed to send stop command to service: {}", err);
+                eprintln!("Warning: Failed to send stop command to service: {err}");
                 println!(
                     "This may be because the service is already stopped or in an invalid state."
                 );
@@ -436,7 +417,7 @@ fn main() -> windows_service::Result<()> {
     }
     println!("Removing service...");
     service.delete().map_err(|e| {
-        eprintln!("Failed to delete service: {}", e);
+        eprintln!("Failed to delete service: {e}");
         e
     })?;
 

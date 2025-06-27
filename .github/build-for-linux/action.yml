@@ -1,4 +1,5 @@
 name: "Build for Linux"
+description: "Builds the OpenList service for Linux using Docker."
 branding:
   icon: user-check
   color: gray-dark

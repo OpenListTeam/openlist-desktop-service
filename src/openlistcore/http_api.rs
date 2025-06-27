@@ -307,21 +307,19 @@ async fn get_process_logs_api(
     }
 }
 
-// Legacy endpoints for backward compatibility
-
-async fn stop_service() -> impl IntoResponse {
-    info!("Handling POST /api/v1/shutdown request - shutting down entire service");
+async fn stop_service_api() -> impl IntoResponse {
+    info!("Handling POST /api/v1/service/stop request - stopping service");
 
     {
         let mut core_manager = CORE_MANAGER.lock();
         if let Err(err) = core_manager.shutdown_all_processes() {
-            warn!("Failed to gracefully stop core application: {}", err);
+            warn!("Failed to gracefully stop all processes: {}", err);
         }
     }
 
     tokio::spawn(async {
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        info!("Initiating service shutdown...");
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        info!("Initiating service stop...");
 
         #[cfg(target_os = "windows")]
         if let Err(err) = crate::openlistcore::stop_service() {
@@ -337,8 +335,8 @@ async fn stop_service() -> impl IntoResponse {
         std::process::exit(0);
     });
 
-    info!("Service shutdown initiated successfully");
-    success_response("Service shutdown initiated successfully").into_response()
+    info!("Service stop initiated successfully");
+    success_response("Service stop initiated successfully").into_response()
 }
 
 async fn health_check() -> impl IntoResponse {
@@ -353,10 +351,11 @@ async fn health_check() -> impl IntoResponse {
 
 fn create_router(app_state: AppState) -> Router {
     let protected_routes = Router::new()
-        // Legacy endpoints for backward compatibility
         .route("/api/v1/status", get(get_status))
         .route("/api/v1/version", get(get_service_version))
-        .route("/api/v1/shutdown", post(stop_service))
+        
+        // Service control endpoints
+        .route("/api/v1/service/stop", post(stop_service_api))
         
         // New process management endpoints
         .route("/api/v1/processes", get(list_processes_api))
@@ -423,6 +422,11 @@ pub async fn run_ipc_server() -> Result<()> {
     info!("  GET  /health - Health check");
     info!("  GET  /api/v1/status - Get service status");
     info!("  GET  /api/v1/version - Get version information");
+
+    info!("");
+    info!("Service management endpoints:");
+    info!("  POST /api/v1/service/stop - Stop the entire service");
+    info!("  POST /api/v1/service/restart - Restart the entire service");
 
     info!("");
     info!("Process management endpoints:");

@@ -1,3 +1,5 @@
+use crate::openlistcore::process::is_process_running;
+
 use super::{data::*, process};
 use anyhow::{Context, Result, anyhow};
 use log::{error, info, warn};
@@ -319,7 +321,7 @@ impl CoreManager {
                 let status = ProcessStatus {
                     id: id.clone(),
                     name: config.name.clone(),
-                    is_running: runtime.is_running.load(Ordering::Relaxed),
+                    is_running: is_process_running(runtime.running_pid.load(Ordering::Relaxed)),
                     pid: {
                         let pid = runtime.running_pid.load(Ordering::Relaxed);
                         if pid > 0 { Some(pid as u32) } else { None }
@@ -355,7 +357,7 @@ impl CoreManager {
         let status = ProcessStatus {
             id: id.to_string(),
             name: config.name.clone(),
-            is_running: runtime.is_running.load(Ordering::Relaxed),
+            is_running: is_process_running(runtime.running_pid.load(Ordering::Relaxed)),
             pid: {
                 let pid = runtime.running_pid.load(Ordering::Relaxed);
                 if pid > 0 { Some(pid as u32) } else { None }
@@ -386,8 +388,9 @@ impl CoreManager {
         let runtime = runtime_states
             .get(id)
             .ok_or_else(|| anyhow!("Runtime state not found: {}", id))?;
+        let pid = runtime.running_pid.load(Ordering::Relaxed);
 
-        if runtime.is_running.load(Ordering::Relaxed) {
+        if is_process_running(pid) {
             return Err(anyhow!("Process {} is already running", config.name));
         }
 

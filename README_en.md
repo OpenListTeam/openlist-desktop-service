@@ -185,6 +185,8 @@ Authorization: Bearer your-api-key
 | GET    | `/health`                     | Health check (no auth required) |
 | GET    | `/api/v1/status`              | Get service status              |
 | GET    | `/api/v1/version`             | Get version information         |
+| POST   | `/api/v1/service/stop`        | Stop the entire service         |
+| POST   | `/api/v1/service/restart`     | Restart the entire service      |
 | GET    | `/api/v1/processes`           | List all processes              |
 | POST   | `/api/v1/processes`           | Create new process              |
 | GET    | `/api/v1/processes/:id`       | Get process details             |
@@ -226,6 +228,13 @@ curl -X POST -H "Authorization: your-api-key" \
 ```bash
 curl -H "Authorization: your-api-key" \
      "http://127.0.0.1:53211/api/v1/processes/{process-id}/logs?lines=50"
+```
+
+#### Stop Service
+
+```bash
+curl -X POST -H "Authorization: your-api-key" \
+     http://127.0.0.1:53211/api/v1/service/stop
 ```
 
 ### Response Format

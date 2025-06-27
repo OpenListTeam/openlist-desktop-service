@@ -6,6 +6,41 @@ use std::{
 
 use log::{error, info, warn};
 
+#[cfg(target_os = "windows")]
+pub fn is_process_running(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    let check_output = Command::new("tasklist")
+        .args(&["/FI", &format!("PID eq {}", pid)])
+        .output();
+
+    match check_output {
+        Ok(output) => {
+            if output.status.success() {
+                let output_str = String::from_utf8_lossy(&output.stdout);
+                output_str.contains(&pid.to_string())
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn is_process_running(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    let check_process = Command::new("ps").args(&["-p", &pid.to_string()]).output();
+
+    match check_process {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
+}
+
 #[cfg(not(target_os = "windows"))]
 pub fn ensure_executable_permissions(binary_path: &str) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;

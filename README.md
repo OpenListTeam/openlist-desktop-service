@@ -180,19 +180,20 @@ Authorization: Bearer your-api-key
 
 ### 端点
 
-| 方法   | 端点                          | 描述             |
-| ------ | ----------------------------- | ---------------- |
-| GET    | `/health`                     | 检查（无需认证） |
-| GET    | `/api/v1/status`              | 获取服务状态     |
-| GET    | `/api/v1/version`             | 获取版本信息     |
-| GET    | `/api/v1/processes`           | 列出所有进程     |
-| POST   | `/api/v1/processes`           | 创建新进程       |
-| GET    | `/api/v1/processes/:id`       | 获取进程详情     |
-| PUT    | `/api/v1/processes/:id`       | 更新进程配置     |
-| DELETE | `/api/v1/processes/:id`       | 删除进程         |
-| POST   | `/api/v1/processes/:id/start` | 启动进程         |
-| POST   | `/api/v1/processes/:id/stop`  | 停止进程         |
-| GET    | `/api/v1/processes/:id/logs`  | 获取进程日志     |
+| 方法   | 端点                          | 描述                 |
+| ------ | ----------------------------- | -------------------- |
+| GET    | `/health`                     | 检查（无需认证）     |
+| GET    | `/api/v1/status`              | 获取服务状态         |
+| GET    | `/api/v1/version`             | 获取版本信息         |
+| POST   | `/api/v1/service/stop`        | 停止整个服务         |
+| GET    | `/api/v1/processes`           | 列出所有进程         |
+| POST   | `/api/v1/processes`           | 创建新进程           |
+| GET    | `/api/v1/processes/:id`       | 获取进程详情         |
+| PUT    | `/api/v1/processes/:id`       | 更新进程配置         |
+| DELETE | `/api/v1/processes/:id`       | 删除进程             |
+| POST   | `/api/v1/processes/:id/start` | 启动进程             |
+| POST   | `/api/v1/processes/:id/stop`  | 停止进程             |
+| GET    | `/api/v1/processes/:id/logs`  | 获取进程日志         |
 
 ### 使用示例
 
@@ -226,6 +227,13 @@ curl -X POST -H "Authorization: your-api-key" \
 ```bash
 curl -H "Authorization: your-api-key" \
      "http://127.0.0.1:53211/api/v1/processes/{process-id}/logs?lines=50"
+```
+
+#### 停止服务
+
+```bash
+curl -X POST -H "Authorization: your-api-key" \
+     http://127.0.0.1:53211/api/v1/service/stop
 ```
 
 ### 响应格式

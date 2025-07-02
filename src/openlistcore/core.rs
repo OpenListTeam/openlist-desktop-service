@@ -15,6 +15,8 @@ use std::{
 };
 use uuid::Uuid;
 
+type ProcessInfo = (String, String); // (id, name)
+
 const SERVICE_NAME: &str = "OpenList Desktop Service";
 const INVALID_PID: i32 = -1;
 const CONFIG_FILE_NAME: &str = "process_configs.json";
@@ -522,11 +524,11 @@ impl CoreManager {
     pub fn auto_start_processes(&mut self) -> Result<()> {
         info!("Auto-starting configured processes...");
 
-        let (priority_processes, other_processes): (Vec<(String, String)>, Vec<(String, String)>) = {
+        let (priority_processes, other_processes): (Vec<ProcessInfo>, Vec<ProcessInfo>) = {
             let process_manager = self.process_manager.inner.lock();
             let processes = process_manager.processes.lock();
 
-            let auto_start_processes: Vec<(String, String)> = processes
+            let auto_start_processes: Vec<ProcessInfo> = processes
                 .iter()
                 .filter(|(_, config)| config.auto_start)
                 .map(|(id, config)| (id.clone(), config.name.clone()))

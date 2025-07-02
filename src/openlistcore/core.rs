@@ -518,38 +518,69 @@ impl CoreManager {
             fetched_lines: lines_to_fetch,
         })
     }
+
     pub fn auto_start_processes(&mut self) -> Result<()> {
         info!("Auto-starting configured processes...");
 
-        let process_ids: Vec<String> = {
+        let (priority_processes, other_processes): (Vec<(String, String)>, Vec<(String, String)>) = {
             let process_manager = self.process_manager.inner.lock();
             let processes = process_manager.processes.lock();
-            processes
+
+            let auto_start_processes: Vec<(String, String)> = processes
                 .iter()
                 .filter(|(_, config)| config.auto_start)
-                .map(|(id, _)| id.clone())
-                .collect()
+                .map(|(id, config)| (id.clone(), config.name.clone()))
+                .collect();
+
+            auto_start_processes.into_iter().partition(|(_, name)| {
+                name == "single_openlist_core_process" || name == "single_rclone_backend_process"
+            })
         };
 
-        if process_ids.is_empty() {
+        let total_processes = priority_processes.len() + other_processes.len();
+
+        if total_processes == 0 {
             info!("No processes configured for auto-start");
             return Ok(());
         }
 
-        info!(
-            "Found {} processes configured for auto-start",
-            process_ids.len()
-        );
+        info!("Found {total_processes} processes configured for auto-start");
 
-        for id in process_ids {
-            //check if the process is already running
-            if let Err(e) = self.start_process(&id) {
-                error!("Failed to auto-start process {id}: {e}");
-            } else {
-                info!("Successfully auto-started process {id}");
+        if !priority_processes.is_empty() {
+            info!(
+                "Starting priority processes first: {}",
+                priority_processes
+                    .iter()
+                    .map(|(_, name)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+
+            for (id, name) in priority_processes {
+                if let Err(e) = self.start_process(&id) {
+                    error!("Failed to auto-start priority process {name} ({id}): {e}");
+                } else {
+                    info!("Successfully auto-started priority process {name} ({id})");
+                }
+            }
+
+            info!("Waiting for priority processes to fully initialize...");
+            std::thread::sleep(std::time::Duration::from_secs(15));
+        }
+
+        if !other_processes.is_empty() {
+            info!("Starting remaining {} processes...", other_processes.len());
+
+            for (id, name) in other_processes {
+                if let Err(e) = self.start_process(&id) {
+                    error!("Failed to auto-start process {name} ({id}): {e}");
+                } else {
+                    info!("Successfully auto-started process {name} ({id})");
+                }
             }
         }
 
+        info!("Auto-start process completed");
         Ok(())
     }
 

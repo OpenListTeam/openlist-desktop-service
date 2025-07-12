@@ -892,22 +892,3 @@ pub fn verify_process_user_context(pid: u32) -> io::Result<String> {
         )))
     }
 }
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn verify_process_user_context(pid: u32) -> io::Result<String> {
-    let output = Command::new("ps")
-        .args(["-o", "pid,user,uid", "-p", &pid.to_string()])
-        .output()?;
-
-    if output.status.success() {
-        let result = String::from_utf8_lossy(&output.stdout);
-        info!("Process context verification: {}", result);
-        Ok(result.to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!("Failed to verify process context: {}", stderr);
-        Err(io::Error::other(format!(
-            "Failed to verify process context: {stderr}"
-        )))
-    }
-}

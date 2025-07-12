@@ -31,7 +31,6 @@ pub fn get_current_user_session() -> io::Result<String> {
             try {
                 $explorerProcesses = Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -gt 0 }
                 if ($explorerProcesses) {
-                    # Get the session with the most recent explorer process
                     $latestExplorer = $explorerProcesses | Sort-Object StartTime -Descending | Select-Object -First 1
                     Write-Output $latestExplorer.SessionId
                     exit 0
@@ -332,17 +331,14 @@ fn spawn_process_as_user(
                 $arguments = '{escaped_args}'
                 $workingDir = '{escaped_working_dir}'
                 
-                # Verify executable exists for fallback too
                 if (-not (Test-Path $executable)) {{
                     throw "Executable not found: $executable"
                 }}
                 
                 Write-Host "Using explorer session fallback method in session $sessionId"
                 
-                # Parse arguments into array for Start-Process, handling quoted arguments properly
                 $argumentArray = @()
                 if ($arguments) {{
-                    # Simple split for now - could be improved to handle quoted arguments with spaces
                     $argumentArray = $arguments -split ' '
                 }}
                 
@@ -363,10 +359,8 @@ fn spawn_process_as_user(
                     
                     Write-Host "Using simple fallback method (may run in current session context)"
                     
-                    # Parse arguments into array for Start-Process, handling quoted arguments properly
                     $argumentArray = @()
                     if ($arguments) {{
-                        # Simple split for now - could be improved to handle quoted arguments with spaces
                         $argumentArray = $arguments -split ' '
                     }}
                     
@@ -857,10 +851,8 @@ pub fn verify_process_user_context(pid: u32) -> io::Result<String> {
     let ps_command = format!(
         "
         try {{
-            # Get process information using Get-Process
             $process = Get-Process -Id {pid} -ErrorAction Stop
             
-            # Get owner information using WMI
             $wmiProcess = Get-WmiObject -Class Win32_Process -Filter \"ProcessId = {pid}\" -ErrorAction Stop
             $owner = $wmiProcess.GetOwner()
             $ownerInfo = \"Unknown\"

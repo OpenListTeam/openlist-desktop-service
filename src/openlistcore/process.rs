@@ -668,8 +668,10 @@ pub fn spawn_process_with_privileges(
     }
     #[cfg(target_os = "linux")]
     {
+        use std::process::Stdio;
         let mut command_to_run = command.to_string();
         let mut args_to_run = args.to_vec();
+        let log_for_stderr = log.try_clone()?;
 
         if run_as_admin {
             info!("Running process with root privileges on Linux using sudo");
@@ -705,9 +707,10 @@ pub fn spawn_process_with_privileges(
     }
     #[cfg(target_os = "macos")]
     {
+        use std::process::Stdio;
         let mut command_to_run = command.to_string();
         let mut args_to_run = args.to_vec();
-
+        let log_for_stderr = log.try_clone()?;
         if run_as_admin {
             info!("Running process with administrator privileges on macOS using sudo");
             // Check if sudo is available

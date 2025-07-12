@@ -25,10 +25,10 @@ fn setup_log_file() -> Result<(), Box<dyn std::error::Error>> {
         Some(std::env::temp_dir().join("openlist-desktop-service.log")),
     ];
     for log_path in log_paths.iter().flatten() {
-        if let Some(parent) = log_path.parent() {
-            if std::fs::create_dir_all(parent).is_err() {
-                continue;
-            }
+        if let Some(parent) = log_path.parent()
+            && std::fs::create_dir_all(parent).is_err()
+        {
+            continue;
         }
 
         let log_pattern = format!("{}.{{}}", log_path.display());
@@ -43,22 +43,17 @@ fn setup_log_file() -> Result<(), Box<dyn std::error::Error>> {
                     "[{d(%Y-%m-%d %H:%M:%S)}] [{l}] {m}{n}",
                 )))
                 .build(log_path, Box::new(compound_policy))
-            {
-                if let Ok(config) = Config::builder()
+                && let Ok(config) = Config::builder()
                     .appender(Appender::builder().build("rolling_file", Box::new(rolling_appender)))
                     .build(
                         Root::builder()
                             .appender("rolling_file")
                             .build(LevelFilter::Info),
                     )
-                {
-                    if log4rs::init_config(config).is_ok() {
-                        info!(
-                            "Rolling log file configured: {log_path:?} (max size: 10MB, keep: 3 files)"
-                        );
-                        return Ok(());
-                    }
-                }
+                && log4rs::init_config(config).is_ok()
+            {
+                info!("Rolling log file configured: {log_path:?} (max size: 10MB, keep: 3 files)");
+                return Ok(());
             }
         }
     }

@@ -79,35 +79,33 @@ fn stop_all_processes() {
             if is_success_response(&response) {
                 match parse_json_response(&response) {
                     Ok(api_response) => {
-                        if let Some(data) = api_response.get("data") {
-                            if let Some(processes) = data.as_array() {
-                                println!("Found {} managed processes to stop", processes.len());
+                        if let Some(data) = api_response.get("data")
+                            && let Some(processes) = data.as_array()
+                        {
+                            println!("Found {} managed processes to stop", processes.len());
 
-                                for process in processes {
-                                    if let Some(id) = process.get("id").and_then(|v| v.as_str()) {
-                                        let stop_path = format!("/api/v1/processes/{id}/stop");
+                            for process in processes {
+                                if let Some(id) = process.get("id").and_then(|v| v.as_str()) {
+                                    let stop_path = format!("/api/v1/processes/{id}/stop");
 
-                                        match make_http_request(
-                                            &host, port, "POST", &stop_path, &api_key,
-                                        ) {
-                                            Ok(stop_response) => {
-                                                if is_success_response(&stop_response) {
-                                                    println!("Successfully stopped process: {id}");
-                                                } else {
-                                                    eprintln!(
-                                                        "Warning: Failed to stop process {id}"
-                                                    );
-                                                }
-                                            }
-                                            Err(e) => {
-                                                eprintln!(
-                                                    "Warning: Failed to send stop request for process {id}: {e}"
-                                                );
+                                    match make_http_request(
+                                        &host, port, "POST", &stop_path, &api_key,
+                                    ) {
+                                        Ok(stop_response) => {
+                                            if is_success_response(&stop_response) {
+                                                println!("Successfully stopped process: {id}");
+                                            } else {
+                                                eprintln!("Warning: Failed to stop process {id}");
                                             }
                                         }
-
-                                        std::thread::sleep(Duration::from_millis(100));
+                                        Err(e) => {
+                                            eprintln!(
+                                                "Warning: Failed to send stop request for process {id}: {e}"
+                                            );
+                                        }
                                     }
+
+                                    std::thread::sleep(Duration::from_millis(100));
                                 }
                             }
                         }

@@ -7,478 +7,196 @@ use std::{
 use log::{error, info, warn};
 
 #[cfg(target_os = "windows")]
-pub fn get_current_user_session() -> io::Result<String> {
-    let output = Command::new("powershell")
-        .args(["-Command", r#"
-            try {
-                Add-Type -TypeDefinition @'
-                    using System;
-                    using System.Runtime.InteropServices;
-                    public class WTS {
-                        [DllImport("kernel32.dll")]
-                        public static extern uint WTSGetActiveConsoleSessionId();
-                    }
-'@
-                $sessionId = [WTS]::WTSGetActiveConsoleSessionId()
-                if ($sessionId -gt 0 -and $sessionId -ne 0xFFFFFFFF) {
-                    Write-Output $sessionId
-                    exit 0
-                }
-            } catch {
-                # Ignore API errors and continue to fallback
-            }
-            
-            try {
-                $explorerProcesses = Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object { $_.SessionId -gt 0 }
-                if ($explorerProcesses) {
-                    $latestExplorer = $explorerProcesses | Sort-Object StartTime -Descending | Select-Object -First 1
-                    Write-Output $latestExplorer.SessionId
-                    exit 0
-                }
-            } catch {
-            }
-            
-            try {
-                $queryOutput = query user 2>$null
-                if ($queryOutput) {
-                    $lines = $queryOutput -split "`n"
-                    foreach ($line in $lines) {
-                        if ($line -match '\s+(\d+)\s+Active') {
-                            $sessionId = $matches[1]
-                            if ([int]$sessionId -gt 0) {
-                                Write-Output $sessionId
-                                exit 0
-                            }
-                        }
-                    }
-                }
-            } catch {
-            }
-            
-            Write-Output 1
-        "#])
-        .output()?;
+use std::ffi::OsStr;
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(target_os = "windows")]
+use std::os::windows::io::AsRawHandle;
+#[cfg(target_os = "windows")]
+use std::ptr;
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
+#[cfg(target_os = "windows")]
+use windows::Win32::Security::{
+    DuplicateTokenEx, SECURITY_ATTRIBUTES, SecurityImpersonation, TOKEN_ALL_ACCESS,
+    TOKEN_ASSIGN_PRIMARY, TokenPrimary,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    OPEN_EXISTING,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::RemoteDesktop::{
+    WTS_SESSION_INFOA, WTSActive, WTSEnumerateSessionsW, WTSFreeMemory,
+    WTSGetActiveConsoleSessionId, WTSQueryUserToken,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::{
+    CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, NORMAL_PRIORITY_CLASS,
+    PROCESS_INFORMATION, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOW,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+#[cfg(target_os = "windows")]
+use windows::core::{PCWSTR, PWSTR};
 
-    if output.status.success() {
-        let session_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !session_id.is_empty() && session_id != "0" {
+#[cfg(target_os = "windows")]
+pub fn get_active_session_id() -> io::Result<u32> {
+    unsafe {
+        let session_id = WTSGetActiveConsoleSessionId();
+        if session_id != u32::MAX && session_id != 0 {
             return Ok(session_id);
         }
-    }
-
-    let output = Command::new("query").args(["user"]).output()?;
-
-    if output.status.success() {
-        let output_str = String::from_utf8_lossy(&output.stdout);
-        for line in output_str.lines().skip(1) {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
+        let mut p_sessions = ptr::null_mut();
+        let mut count = 0;
+        if WTSEnumerateSessionsW(None, 0, 1, &mut p_sessions, &mut count).is_ok() {
+            let sessions =
+                std::slice::from_raw_parts(p_sessions as *const WTS_SESSION_INFOA, count as usize);
+            for info in sessions {
+                if info.State == WTSActive {
+                    let sid = info.SessionId;
+                    WTSFreeMemory(p_sessions as _);
+                    return Ok(sid);
+                }
             }
-
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3
-                && let Ok(session_id) = parts[2].parse::<u32>()
-                && session_id > 0
-            {
-                return Ok(session_id.to_string());
-            }
+            WTSFreeMemory(p_sessions as _);
         }
+        log::warn!("No active session found, defaulting to session 1");
+        Ok(1)
     }
-
-    warn!("Could not determine user session ID, using default session 1");
-    Ok("1".to_string())
 }
 
 #[cfg(target_os = "windows")]
-fn spawn_process_as_user(
+pub fn spawn_process_as_user(
     command: &str,
     args: &[&str],
-    working_dir: &Path,
-    mut log: std::fs::File,
+    working_dir: &std::path::Path,
+    log_file: std::fs::File,
 ) -> io::Result<u32> {
-    let session_id = get_current_user_session().unwrap_or_else(|_| {
-        warn!("Could not determine user session, using default session");
-        "1".to_string()
-    });
+    unsafe {
+        use windows::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+        let session_id = get_active_session_id()?;
+        log::info!("Starting process in session {session_id}");
 
-    info!("Attempting to start process in user session: {session_id}");
+        let mut user_token: HANDLE = HANDLE::default();
+        let ok = WTSQueryUserToken(session_id, &mut user_token);
+        if ok.is_err() {
+            let err = io::Error::last_os_error();
+            log::error!("WTSQueryUserToken failed: {err}");
+            return Err(err);
+        }
 
-    let escaped_command = command;
-    let escaped_args = args.join(" ");
-    let escaped_working_dir = working_dir.display().to_string();
+        let mut primary_token: HANDLE = HANDLE::default();
+        let sa: SECURITY_ATTRIBUTES = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: std::ptr::null_mut(),
+            bInheritHandle: false.into(),
+        };
+        let dup_ok = DuplicateTokenEx(
+            user_token,
+            TOKEN_ASSIGN_PRIMARY | TOKEN_ALL_ACCESS,
+            Some(&sa),
+            SecurityImpersonation,
+            TokenPrimary,
+            &mut primary_token,
+        );
+        let _ = CloseHandle(user_token);
+        if dup_ok.is_err() {
+            let err = io::Error::last_os_error();
+            log::error!("DuplicateTokenEx failed: {err}");
+            return Err(err);
+        }
 
-    let ps_command = format!(
-        r#"
-        Add-Type -TypeDefinition @'
-            using System;
-            using System.Runtime.InteropServices;
-            using System.Diagnostics;
-            using System.Security;
-            using System.ComponentModel;
-            
-            public class ProcessStarter {{
-                [DllImport("advapi32.dll", SetLastError = true)]
-                public static extern bool CreateProcessAsUser(
-                    IntPtr hToken,
-                    string lpApplicationName,
-                    string lpCommandLine,
-                    IntPtr lpProcessAttributes,
-                    IntPtr lpThreadAttributes,
-                    bool bInheritHandles,
-                    uint dwCreationFlags,
-                    IntPtr lpEnvironment,
-                    string lpCurrentDirectory,
-                    ref STARTUPINFO lpStartupInfo,
-                    out PROCESS_INFORMATION lpProcessInformation);
-                
-                [DllImport("kernel32.dll", SetLastError = true)]
-                public static extern bool CloseHandle(IntPtr hObject);
-                
-                [DllImport("wtsapi32.dll", SetLastError = true)]
-                public static extern bool WTSQueryUserToken(uint SessionId, out IntPtr phToken);
-                
-                [DllImport("advapi32.dll", SetLastError = true)]
-                public static extern bool DuplicateTokenEx(
-                    IntPtr hExistingToken,
-                    uint dwDesiredAccess,
-                    IntPtr lpTokenAttributes,
-                    int ImpersonationLevel,
-                    int TokenType,
-                    out IntPtr phNewToken);
-                
-                [DllImport("userenv.dll", SetLastError = true)]
-                public static extern bool CreateEnvironmentBlock(
-                    out IntPtr lpEnvironment,
-                    IntPtr hToken,
-                    bool bInherit);
-                
-                [DllImport("userenv.dll", SetLastError = true)]
-                public static extern bool DestroyEnvironmentBlock(IntPtr lpEnvironment);
-                
-                private const uint TOKEN_DUPLICATE = 0x0002;
-                private const uint TOKEN_ASSIGN_PRIMARY = 0x0001;
-                private const uint TOKEN_QUERY = 0x0008;
-                private const uint TOKEN_ADJUST_PRIVILEGES = 0x0020;
-                private const uint TOKEN_ADJUST_SESSIONID = 0x0100;
-                private const int SecurityImpersonation = 2;
-                private const int TokenPrimary = 1;
-                private const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
-                private const uint NORMAL_PRIORITY_CLASS = 0x00000020;
-                
-                [StructLayout(LayoutKind.Sequential)]
-                public struct STARTUPINFO {{
-                    public int cb;
-                    public string lpReserved;
-                    public string lpDesktop;
-                    public string lpTitle;
-                    public int dwX;
-                    public int dwY;
-                    public int dwXSize;
-                    public int dwYSize;
-                    public int dwXCountChars;
-                    public int dwYCountChars;
-                    public int dwFillAttribute;
-                    public int dwFlags;
-                    public short wShowWindow;
-                    public short cbReserved2;
-                    public IntPtr lpReserved2;
-                    public IntPtr hStdInput;
-                    public IntPtr hStdOutput;
-                    public IntPtr hStdError;
-                }}
-                
-                [StructLayout(LayoutKind.Sequential)]
-                public struct PROCESS_INFORMATION {{
-                    public IntPtr hProcess;
-                    public IntPtr hThread;
-                    public int dwProcessId;
-                    public int dwThreadId;
-                }}
-                
-                public static int StartProcessInSession(uint sessionId, string executable, string arguments, string workingDirectory) {{
-                    IntPtr userToken = IntPtr.Zero;
-                    IntPtr duplicatedToken = IntPtr.Zero;
-                    IntPtr environment = IntPtr.Zero;
-                    
-                    try {{
-                        Console.WriteLine("Session ID: " + sessionId);
-                        Console.WriteLine("Executable: " + executable);
-                        Console.WriteLine("Arguments: " + arguments);
-                        Console.WriteLine("Working Directory: " + workingDirectory);
-                        
-                        if (!System.IO.File.Exists(executable)) {{
-                            throw new System.IO.FileNotFoundException("Executable not found: " + executable);
-                        }}
-                        
-                        if (!WTSQueryUserToken(sessionId, out userToken)) {{
-                            int error = Marshal.GetLastWin32Error();
-                            throw new Win32Exception(error, "Failed to get user token for session " + sessionId + ". Error: " + error);
-                        }}
-                        
-                        if (!DuplicateTokenEx(
-                            userToken,
-                            TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES | TOKEN_ADJUST_SESSIONID,
-                            IntPtr.Zero,
-                            SecurityImpersonation,
-                            TokenPrimary,
-                            out duplicatedToken)) {{
-                            int error = Marshal.GetLastWin32Error();
-                            throw new Win32Exception(error, "Failed to duplicate token. Error: " + error);
-                        }}
-                        
-                        if (!CreateEnvironmentBlock(out environment, duplicatedToken, false)) {{
-                            int error = Marshal.GetLastWin32Error();
-                            throw new Win32Exception(error, "Failed to create environment block. Error: " + error);
-                        }}
-                        
-                        STARTUPINFO startInfo = new STARTUPINFO();
-                        startInfo.cb = Marshal.SizeOf(startInfo);
-                        startInfo.lpDesktop = "winsta0\\default";
-                        startInfo.wShowWindow = 0; // SW_HIDE
-                        startInfo.dwFlags = 1; // STARTF_USESHOWWINDOW
-                        
-                        PROCESS_INFORMATION procInfo;
-                        
-                        string commandLine = string.IsNullOrEmpty(arguments) ? 
-                            "\"" + executable + "\"" : 
-                            "\"" + executable + "\" " + arguments;
-                        
-                        bool success = CreateProcessAsUser(
-                            duplicatedToken,
-                            executable,
-                            commandLine,
-                            IntPtr.Zero,
-                            IntPtr.Zero,
-                            false,
-                            CREATE_UNICODE_ENVIRONMENT | NORMAL_PRIORITY_CLASS,
-                            environment,
-                            workingDirectory,
-                            ref startInfo,
-                            out procInfo);
-                        
-                        if (!success) {{
-                            int error = Marshal.GetLastWin32Error();
-                            throw new Win32Exception(error, "Failed to create process as user. Executable: " + executable + ", Arguments: " + arguments + ", Working Dir: " + workingDirectory + ", Error: " + error);
-                        }}
-                        
-                        int processId = procInfo.dwProcessId;
-                        CloseHandle(procInfo.hProcess);
-                        CloseHandle(procInfo.hThread);
-                        
-                        return processId;
-                    }}
-                    finally {{
-                        if (environment != IntPtr.Zero) {{
-                            DestroyEnvironmentBlock(environment);
-                        }}
-                        if (duplicatedToken != IntPtr.Zero) {{
-                            CloseHandle(duplicatedToken);
-                        }}
-                        if (userToken != IntPtr.Zero) {{
-                            CloseHandle(userToken);
-                        }}
-                    }}
-                }}
-            }}
-'@
-        
-        try {{
-            $executable = '{escaped_command}'
-            $arguments = '{escaped_args}'
-            $workingDir = '{escaped_working_dir}'
-            $sessionId = {session_id}
+        let mut env_block: *mut core::ffi::c_void = ptr::null_mut();
+        if CreateEnvironmentBlock(&mut env_block, Some(primary_token), false).is_err() {
+            let err_code = GetLastError();
+            log::warn!(
+                "CreateEnvironmentBlock failed (error {}), proceeding without custom env",
+                err_code.0
+            );
+            env_block = ptr::null_mut();
+        }
 
-            Write-Host "Debug: Executable path: $executable"
-            Write-Host "Debug: Arguments: $arguments"
-            Write-Host "Debug: Working directory: $workingDir"
-            Write-Host "Debug: Session ID: $sessionId"
-            
-            if (-not (Test-Path $executable)) {{
-                throw "Executable not found: $executable"
-            }}
-            
-            $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-            $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-            
-            if (-not $isAdmin) {{
-                Write-Warning "Running without administrator privileges - WTS API method will likely fail"
-            }}
-            
-            $processId = [ProcessStarter]::StartProcessInSession($sessionId, $executable, $arguments, $workingDir)
-            Write-Output $processId
-            exit 0
-        }}
-        catch {{
-            Write-Warning "Primary method failed: $($_.Exception.Message)"
-            try {{
-                $explorerProcess = Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object {{ $_.SessionId -eq $sessionId }} | Select-Object -First 1
-                
-                if (-not $explorerProcess) {{
-                    Write-Host "No explorer in session $sessionId, looking for any interactive session..."
-                    $explorerProcess = Get-Process -Name explorer -ErrorAction SilentlyContinue | Where-Object {{ $_.SessionId -gt 0 }} | Select-Object -First 1
-                    if ($explorerProcess) {{
-                        Write-Host "Found explorer in session $($explorerProcess.SessionId), using that session"
-                        $sessionId = $explorerProcess.SessionId
-                    }}
-                }}
-                
-                if (-not $explorerProcess) {{
-                    throw "No explorer process found in any interactive session"
-                }}
-                
-                $executable = '{escaped_command}'
-                $arguments = '{escaped_args}'
-                $workingDir = '{escaped_working_dir}'
-                
-                if (-not (Test-Path $executable)) {{
-                    throw "Executable not found: $executable"
-                }}
-                
-                Write-Host "Using explorer session fallback method in session $sessionId"
-                
-                $argumentArray = @()
-                if ($arguments) {{
-                    $argumentArray = $arguments -split ' '
-                }}
-                
-                $process = Start-Process -FilePath $executable -ArgumentList $argumentArray -WorkingDirectory $workingDir -WindowStyle Hidden -PassThru
-                Write-Output $process.Id
-                exit 0
-            }}
-            catch {{
-                Write-Warning "Explorer session method failed: $($_.Exception.Message)"
-                try {{
-                    $executable = '{escaped_command}'
-                    $arguments = '{escaped_args}'
-                    $workingDir = '{escaped_working_dir}'
-                    
-                    if (-not (Test-Path $executable)) {{
-                        throw "Executable not found: $executable"
-                    }}
-                    
-                    Write-Host "Using simple fallback method (may run in current session context)"
-                    
-                    $argumentArray = @()
-                    if ($arguments) {{
-                        $argumentArray = $arguments -split ' '
-                    }}
-                    
-                    $process = Start-Process -FilePath $executable -ArgumentList $argumentArray -WorkingDirectory $workingDir -WindowStyle Hidden -PassThru
-                    Write-Warning "Started process using simple fallback method - may run in service context"
-                    Write-Output $process.Id
-                    exit 0
-                }}
-                catch {{
-                    throw "All methods failed to start process: $($_.Exception.Message)"
-                }}
-            }}
-        }}
-        "#
-    );
-    info!("Executing PowerShell command to start process in user session {session_id}");
-
-    let timeout_ps_command = format!(
-        r#"
-        $timeoutSeconds = 30
-        $job = Start-Job -ScriptBlock {{
-            {ps_command}
-        }}
-        
-        if (Wait-Job $job -Timeout $timeoutSeconds) {{
-            $result = Receive-Job $job
-            Remove-Job $job
-            Write-Output $result
-        }} else {{
-            Remove-Job $job -Force
-            throw "PowerShell command timed out after $timeoutSeconds seconds"
-        }}
-        "#
-    );
-
-    let output = Command::new("powershell")
-        .args(["-Command", &timeout_ps_command])
-        .current_dir(working_dir)
-        .output()?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    info!("PowerShell stdout: {stdout}");
-    if !stderr.is_empty() {
-        info!("PowerShell stderr: {stderr}");
-    }
-
-    if output.status.success() {
-        let output_text = String::from_utf8_lossy(&output.stdout);
-        info!("Raw PowerShell output: {output_text}");
-
-        let pid_str = output_text
-            .lines()
-            .filter_map(|line| {
-                let line = line.trim();
-                if line.starts_with("WARNING:") || line.is_empty() {
-                    return None;
-                }
-                if line.chars().all(|c| c.is_ascii_digit()) {
-                    Some(line)
-                } else {
-                    None
-                }
-            })
-            .next()
-            .unwrap_or("")
-            .to_string();
-
-        match pid_str.parse::<u32>() {
-            Ok(pid) => {
-                info!(
-                    "Process started successfully in user session {}, PID: {}, working dir: {}",
-                    session_id,
-                    pid,
-                    working_dir.display()
-                );
-
-                let _ = writeln!(
-                    log,
-                    "Process started in user session {session_id}, PID: {pid}"
-                );
-                log.flush()?;
-
-                match verify_process_user_context(pid) {
-                    Ok(context_info) => {
-                        info!("Process context verified: {context_info}");
-                        let _ = writeln!(log, "Process context: {context_info}");
-                    }
-                    Err(e) => {
-                        warn!("Could not verify process context: {e}");
-                        let _ = writeln!(log, "Warning: Could not verify process context: {e}");
-                    }
-                }
-                log.flush()?;
-
-                Ok(pid)
+        let mut startup_info: STARTUPINFOW = std::mem::zeroed();
+        startup_info.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        let log_handle = HANDLE(log_file.as_raw_handle() as _);
+        let _ = SetHandleInformation(log_handle, 1u32, HANDLE_FLAG_INHERIT);
+        let working_dir_w: Vec<u16> = working_dir
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0)) // null terminator
+            .collect();
+        let nul_str: Vec<u16> = OsStr::new("NUL")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let nul_handle = CreateFileW(
+            PCWSTR(nul_str.as_ptr()),
+            FILE_GENERIC_READ.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            Some(&sa),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        );
+        match nul_handle {
+            Ok(handle) => {
+                startup_info.hStdInput = handle;
             }
-            Err(e) => {
-                error!("Failed to parse PID from PowerShell output '{pid_str}': {e}");
-                let _ = writeln!(log, "Failed to parse PID from PowerShell output: {e}");
-                log.flush()?;
-                Err(io::Error::other(format!("Failed to parse PID: {e}")))
+            Err(_) => {
+                startup_info.hStdInput = HANDLE::default();
             }
         }
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        error!("Failed to start process in user session. Stderr: {stderr}");
-        error!("PowerShell stdout: {stdout}");
-        let _ = writeln!(
-            log,
-            "Failed to start process in user session. Stderr: {stderr}"
+        startup_info.hStdOutput = log_handle;
+        startup_info.hStdError = log_handle;
+        startup_info.dwFlags |= STARTF_USESTDHANDLES;
+        startup_info.dwFlags |= STARTF_USESHOWWINDOW;
+        startup_info.wShowWindow = SW_HIDE.0 as u16;
+
+        let mut cmdline = format!("\"{command}\"");
+        for arg in args {
+            if arg.contains(' ') {
+                cmdline.push_str(&format!(" \"{arg}\"",));
+            } else {
+                cmdline.push_str(&format!(" {arg}"));
+            }
+        }
+        let mut cmdline_w: Vec<u16> = OsStr::new(&cmdline)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut proc_info: PROCESS_INFORMATION = std::mem::zeroed();
+        let create_ok = CreateProcessAsUserW(
+            Some(primary_token),
+            None,
+            Some(PWSTR(cmdline_w.as_mut_ptr())),
+            None,
+            None,
+            true,
+            CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | NORMAL_PRIORITY_CLASS,
+            Some(env_block as *mut _),
+            PCWSTR(working_dir_w.as_ptr()),
+            &startup_info,
+            &mut proc_info,
         );
-        let _ = writeln!(log, "PowerShell stdout: {stdout}");
-        log.flush()?;
-        Err(io::Error::other(format!(
-            "Failed to start process in user session. Stderr: {stderr}"
-        )))
+        if !env_block.is_null() {
+            let _ = DestroyEnvironmentBlock(env_block);
+        }
+        let _ = CloseHandle(primary_token);
+
+        if create_ok.is_err() {
+            let err = io::Error::last_os_error();
+            log::error!("CreateProcessAsUserW failed: {err}");
+            return Err(err);
+        }
+        let pid = proc_info.dwProcessId;
+        let _ = CloseHandle(proc_info.hProcess);
+        let _ = CloseHandle(proc_info.hThread);
+        log::info!("Process started successfully in session {session_id}, PID: {pid}");
+        Ok(pid)
     }
 }
 
@@ -842,45 +560,6 @@ pub fn kill_process(pid: u32) -> io::Result<()> {
         Err(io::Error::other(format!(
             "Kill command with sudo failed: {}",
             stderr.trim()
-        )))
-    }
-}
-
-#[cfg(target_os = "windows")]
-pub fn verify_process_user_context(pid: u32) -> io::Result<String> {
-    let ps_command = format!(
-        "
-        try {{
-            $process = Get-Process -Id {pid} -ErrorAction Stop
-            
-            $wmiProcess = Get-WmiObject -Class Win32_Process -Filter \"ProcessId = {pid}\" -ErrorAction Stop
-            $owner = $wmiProcess.GetOwner()
-            $ownerInfo = \"Unknown\"
-            if ($owner.ReturnValue -eq 0) {{
-                $ownerInfo = \"$($owner.Domain)\\$($owner.User)\"
-            }}
-            
-            Write-Output \"PID: {pid} | Owner: $ownerInfo | Session: $($process.SessionId) | Process: $($process.ProcessName)\"
-        }}
-        catch {{
-            Write-Output \"Error getting process info: $($_.Exception.Message)\"
-        }}
-        "
-    );
-
-    let output = Command::new("powershell")
-        .args(["-Command", &ps_command])
-        .output()?;
-
-    if output.status.success() {
-        let result = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        info!("Process context verification: {result}");
-        Ok(result)
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!("Failed to verify process context: {stderr}");
-        Err(io::Error::other(format!(
-            "Failed to verify process context: {stderr}"
         )))
     }
 }

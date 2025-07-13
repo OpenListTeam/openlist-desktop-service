@@ -40,6 +40,15 @@ hyper = { version = "1.5.0", features = ["full"] }
 winapi = { version = "0.3", features = ["namedpipeapi", "handleapi", "winbase", "winnt", "winerror", "errhandlingapi", "accctrl", "aclapi", "securitybaseapi", "minwinbase", "wingdi"] }
 encoding_rs = "0.8.33"
 uuid = { version = "1.0", features = ["v4", "serde"] }
+windows = {version = "0.61.3", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Threading",
+    "Win32_System_Environment",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_WindowsAndMessaging"
+]}
 
 [target.'cfg(target_os = "linux")'.dependencies]
 openssl = { version = "0.10.72", features = ["vendored"] }

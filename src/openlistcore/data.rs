@@ -61,37 +61,12 @@ pub struct UpdateProcessRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct StartProcessRequest {
-    pub id: String,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct StopProcessRequest {
-    pub id: String,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct LogRequest {
-    pub id: String,
-    pub lines: Option<usize>, // Number of lines to fetch from end
-    pub from_timestamp: Option<u64>,
-    pub to_timestamp: Option<u64>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct LogResponse {
     pub id: String,
     pub name: String,
     pub log_content: String,
     pub total_lines: usize,
     pub fetched_lines: usize,
-}
-
-#[derive(Deserialize, Serialize)]
-pub struct JsonResponse<T: Serialize> {
-    pub code: u64,
-    pub msg: String,
-    pub data: Option<T>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

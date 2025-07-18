@@ -387,20 +387,33 @@ pub fn spawn_process_with_privileges(
 
         if run_as_admin {
             info!("Running process with root privileges on Linux using sudo");
-            // Check if sudo is available
-            if Command::new("which")
-                .arg("sudo")
-                .output()
-                .is_ok_and(|o| o.status.success())
-            {
-                args_to_run.insert(0, command);
-                command_to_run = "sudo".to_string();
-            } else {
-                warn!("sudo not available, running without elevated privileges");
+            let sudo_check = Command::new("sudo")
+                .args(["-n", "true"]) // -n flag prevents password prompt
+                .output();
+
+            match sudo_check {
+                Ok(output) if output.status.success() => {
+                    args_to_run.insert(0, command);
+                    args_to_run.insert(0, "-n");
+                    command_to_run = "sudo".to_string();
+                    info!("Using sudo with NOPASSWD configuration");
+                }
+                Ok(_) => {
+                    warn!(
+                        "sudo requires password authentication, running without elevated privileges"
+                    );
+                    warn!(
+                        "To run processes with elevated privileges, configure sudo NOPASSWD for this user"
+                    );
+                }
+                Err(_) => {
+                    warn!("sudo not available, running without elevated privileges");
+                }
             }
         } else {
             info!("Running process without elevated privileges on Linux");
         }
+
         let child = Command::new(&command_to_run)
             .args(&args_to_run)
             .current_dir(working_dir)
@@ -423,18 +436,29 @@ pub fn spawn_process_with_privileges(
         let mut command_to_run = command.to_string();
         let mut args_to_run = args.to_vec();
         let log_for_stderr = log.try_clone()?;
+
         if run_as_admin {
             info!("Running process with administrator privileges on macOS using sudo");
-            // Check if sudo is available
-            if Command::new("which")
-                .arg("sudo")
-                .output()
-                .is_ok_and(|o| o.status.success())
-            {
-                args_to_run.insert(0, command);
-                command_to_run = "sudo".to_string();
-            } else {
-                warn!("sudo not available, running without elevated privileges");
+            let sudo_check = Command::new("sudo").args(["-n", "true"]).output();
+
+            match sudo_check {
+                Ok(output) if output.status.success() => {
+                    args_to_run.insert(0, command);
+                    args_to_run.insert(0, "-n");
+                    command_to_run = "sudo".to_string();
+                    info!("Using sudo with NOPASSWD configuration");
+                }
+                Ok(_) => {
+                    warn!(
+                        "sudo requires password authentication, running without elevated privileges"
+                    );
+                    warn!(
+                        "To run processes with elevated privileges, configure sudo NOPASSWD for this user"
+                    );
+                }
+                Err(_) => {
+                    warn!("sudo not available, running without elevated privileges");
+                }
             }
         } else {
             info!("Running process without elevated privileges on macOS");
@@ -502,7 +526,7 @@ pub fn kill_process(pid: u32) -> io::Result<()> {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn kill_process(pid: u32) -> io::Result<()> {
-    info!("Attempting to terminate process PID {pid} with elevated privileges");
+    info!("Attempting to terminate process PID {pid}");
 
     let check_process = Command::new("ps").args(["-p", &pid.to_string()]).output()?;
     if !check_process.status.success() {
@@ -510,56 +534,73 @@ pub fn kill_process(pid: u32) -> io::Result<()> {
         return Ok(());
     }
 
-    info!("Sending SIGINT signal to process PID {pid} with sudo");
+    info!("Sending SIGINT signal to process PID {pid}");
     let kill_int_args = &["-2", &pid.to_string()];
-    let output = Command::new("sudo")
-        .arg("kill")
-        .args(kill_int_args)
-        .output()?;
+    let output = Command::new("kill").args(kill_int_args).output()?;
 
     if output.status.success() {
-        info!("Successfully sent SIGINT signal to process PID {pid} with sudo");
+        info!("Successfully sent SIGINT signal to process PID {pid}");
         std::thread::sleep(std::time::Duration::from_millis(1000));
 
         let check_process = Command::new("ps").args(["-p", &pid.to_string()]).output()?;
-
         if !check_process.status.success() {
+            info!("Process PID {pid} terminated successfully after SIGINT");
             return Ok(());
         }
 
-        warn!(
-            "Process {pid} did not terminate after receiving SIGINT, attempting to send SIGKILL with sudo"
-        );
+        warn!("Process {pid} did not terminate after receiving SIGINT, attempting SIGKILL");
     } else {
-        warn!(
-            "Failed to send SIGINT to process PID {pid} with sudo, attempting to send SIGKILL with sudo"
-        );
+        warn!("Failed to send SIGINT to process PID {pid}, attempting SIGKILL");
     }
 
-    info!("Sending SIGKILL signal to process PID {pid} with sudo");
+    info!("Sending SIGKILL signal to process PID {pid}");
     let kill_kill_args = &["-9", &pid.to_string()];
-    let output = Command::new("sudo")
-        .arg("kill")
-        .args(kill_kill_args)
-        .output()?;
-
-    let stderr = if !output.stderr.is_empty() {
-        String::from_utf8_lossy(&output.stderr).to_string()
-    } else {
-        String::from("")
-    };
+    let output = Command::new("kill").args(kill_kill_args).output()?;
 
     if output.status.success() {
-        info!("Successfully terminated process PID {pid} using SIGKILL with sudo");
-        Ok(())
-    } else {
-        error!(
-            "Failed to terminate process PID {pid} using SIGKILL with sudo: {}",
-            stderr.trim()
-        );
-        Err(io::Error::other(format!(
-            "Kill command with sudo failed: {}",
-            stderr.trim()
-        )))
+        info!("Successfully terminated process PID {pid} using SIGKILL");
+        return Ok(());
+    }
+
+    warn!("Regular kill failed, attempting with sudo (may require password)");
+
+    let sudo_kill_output = Command::new("sudo")
+        .args(["-n", "kill", "-9", &pid.to_string()])
+        .output();
+
+    match sudo_kill_output {
+        Ok(output) if output.status.success() => {
+            info!("Successfully terminated process PID {pid} using sudo SIGKILL");
+            Ok(())
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("password") || stderr.contains("authentication") {
+                warn!(
+                    "sudo requires password authentication, cannot kill process {pid} automatically"
+                );
+                warn!(
+                    "Process {pid} may need to be killed manually or configure sudo NOPASSWD for kill command"
+                );
+                Err(io::Error::other(format!(
+                    "Process {pid} requires elevated privileges to terminate and sudo authentication is not available"
+                )))
+            } else {
+                error!(
+                    "Failed to terminate process PID {pid} using sudo: {}",
+                    stderr.trim()
+                );
+                Err(io::Error::other(format!(
+                    "Kill command with sudo failed: {}",
+                    stderr.trim()
+                )))
+            }
+        }
+        Err(e) => {
+            error!("Failed to execute sudo kill command: {e}");
+            Err(io::Error::other(format!(
+                "Could not terminate process {pid}: {e}"
+            )))
+        }
     }
 }

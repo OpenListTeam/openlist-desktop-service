@@ -48,7 +48,11 @@ pub fn get_active_session_id() -> io::Result<u32> {
     unsafe {
         let session_id = WTSGetActiveConsoleSessionId();
         if session_id != u32::MAX && session_id != 0 {
-            return Ok(session_id);
+            let mut user_token: HANDLE = HANDLE::default();
+            if WTSQueryUserToken(session_id, &mut user_token).is_ok() {
+                let _ = CloseHandle(user_token);
+                return Ok(session_id);
+            }
         }
         let mut p_sessions = ptr::null_mut();
         let mut count = 0;
@@ -57,14 +61,17 @@ pub fn get_active_session_id() -> io::Result<u32> {
                 std::slice::from_raw_parts(p_sessions as *const WTS_SESSION_INFOA, count as usize);
             for info in sessions {
                 if info.State == WTSActive {
-                    let sid = info.SessionId;
-                    WTSFreeMemory(p_sessions as _);
-                    return Ok(sid);
+                    let mut user_token: HANDLE = HANDLE::default();
+                    if WTSQueryUserToken(info.SessionId, &mut user_token).is_ok() {
+                        let _ = CloseHandle(user_token);
+                        WTSFreeMemory(p_sessions as _);
+                        return Ok(info.SessionId);
+                    }
                 }
             }
             WTSFreeMemory(p_sessions as _);
         }
-        log::warn!("No active session found, defaulting to session 1");
+        log::warn!("No active session with a valid user token found, defaulting to session 1");
         Ok(1)
     }
 }

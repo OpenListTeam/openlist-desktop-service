@@ -473,6 +473,7 @@ mod linux {
 mod windows {
     use super::*;
     use std::ffi::{OsStr, OsString};
+    use std::process::Command;
     use windows_service::{
         service::{
             ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceState,
@@ -485,6 +486,7 @@ mod windows {
     const SERVICE_DISPLAY_NAME: &str = "OpenList Desktop Service";
     const SERVICE_DESCRIPTION: &str =
         "OpenList Desktop Service helps to launch openlist application";
+    const TASK_NAME: &str = "OpenList Desktop Service Fallback";
 
     pub fn install() -> windows_service::Result<()> {
         println!("Starting Windows service installation...");
@@ -500,10 +502,19 @@ mod windows {
 
         if let Some(existing_service) = try_open_existing_service(&service_manager)? {
             handle_existing_service(existing_service)?;
+            if let Err(e) = create_task_scheduler_fallback(&service_binary_path) {
+                println!("Warning: Failed to create Task Scheduler fallback: {}", e);
+            }
             return Ok(());
         }
 
-        create_new_service(&service_manager, service_binary_path)?;
+        create_new_service(&service_manager, service_binary_path.clone())?;
+
+        if let Err(e) = create_task_scheduler_fallback(&service_binary_path) {
+            println!("Warning: Failed to create Task Scheduler fallback: {}", e);
+            println!("The service will still work, but may not auto-start on some systems.");
+        }
+
         println!("Service installation completed successfully");
         Ok(())
     }
@@ -577,7 +588,7 @@ mod windows {
             name: OsString::from(SERVICE_NAME),
             display_name: OsString::from(SERVICE_DISPLAY_NAME),
             service_type: ServiceType::OWN_PROCESS,
-            start_type: ServiceStartType::AutoStart,
+            start_type: ServiceStartType::OnDemand,
             error_control: ServiceErrorControl::Normal,
             executable_path: service_binary_path,
             launch_arguments: vec![],
@@ -601,6 +612,65 @@ mod windows {
         println!("Starting service...");
         service.start(&Vec::<&OsStr>::new())?;
         println!("Service started successfully");
+
+        Ok(())
+    }
+
+    fn create_task_scheduler_fallback(
+        _service_binary_path: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        println!("Creating Task Scheduler fallback...");
+
+        if task_exists()? {
+            println!("Task Scheduler fallback already exists, updating...");
+            delete_existing_task()?;
+        }
+
+        let start_command = format!("sc start {}", SERVICE_NAME);
+
+        let output = Command::new("schtasks")
+            .args(&[
+                "/create",
+                "/tn",
+                TASK_NAME,
+                "/tr",
+                &start_command,
+                "/sc",
+                "onlogon",
+                "/ru",
+                "SYSTEM",
+                "/rl",
+                "highest",
+                "/f",
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            let error_msg = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Failed to create scheduled task: {}", error_msg).into());
+        }
+
+        println!("Task Scheduler fallback created successfully");
+        Ok(())
+    }
+
+    fn task_exists() -> Result<bool, Box<dyn std::error::Error>> {
+        let output = Command::new("schtasks")
+            .args(&["/query", "/tn", TASK_NAME])
+            .output()?;
+
+        Ok(output.status.success())
+    }
+
+    fn delete_existing_task() -> Result<(), Box<dyn std::error::Error>> {
+        let output = Command::new("schtasks")
+            .args(&["/delete", "/tn", TASK_NAME, "/f"])
+            .output()?;
+
+        if !output.status.success() {
+            let error_msg = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Failed to delete existing task: {}", error_msg).into());
+        }
 
         Ok(())
     }

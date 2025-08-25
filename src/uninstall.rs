@@ -354,6 +354,10 @@ fn main() -> windows_service::Result<()> {
 
     stop_all_processes();
 
+    if let Err(e) = remove_task_scheduler_fallback() {
+        println!("Warning: Failed to remove Task Scheduler fallback: {}", e);
+    }
+
     let manager_access = ServiceManagerAccess::CONNECT;
     let service_manager =
         ServiceManager::local_computer(None::<&str>, manager_access).map_err(|e| {
@@ -453,4 +457,33 @@ fn cleanup_config_files() {
     } else {
         println!("Config directory not found: {}", config_dir.display());
     }
+}
+
+#[cfg(windows)]
+fn remove_task_scheduler_fallback() -> Result<(), Box<dyn std::error::Error>> {
+    const TASK_NAME: &str = "OpenList Desktop Service Fallback";
+
+    println!("Removing Task Scheduler fallback...");
+
+    let check_output = std::process::Command::new("schtasks")
+        .args(&["/query", "/tn", TASK_NAME])
+        .output()?;
+
+    if !check_output.status.success() {
+        println!("Task Scheduler fallback not found (this is normal)");
+        return Ok(());
+    }
+
+    let output = std::process::Command::new("schtasks")
+        .args(&["/delete", "/tn", TASK_NAME, "/f"])
+        .output()?;
+
+    if output.status.success() {
+        println!("Task Scheduler fallback removed successfully");
+    } else {
+        let error_msg = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to delete scheduled task: {}", error_msg).into());
+    }
+
+    Ok(())
 }

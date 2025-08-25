@@ -629,7 +629,7 @@ mod windows {
         let start_command = format!("sc start {}", SERVICE_NAME);
 
         let output = Command::new("schtasks")
-            .args(&[
+            .args([
                 "/create",
                 "/tn",
                 TASK_NAME,
@@ -656,7 +656,7 @@ mod windows {
 
     fn task_exists() -> Result<bool, Box<dyn std::error::Error>> {
         let output = Command::new("schtasks")
-            .args(&["/query", "/tn", TASK_NAME])
+            .args(["/query", "/tn", TASK_NAME])
             .output()?;
 
         Ok(output.status.success())
@@ -664,7 +664,7 @@ mod windows {
 
     fn delete_existing_task() -> Result<(), Box<dyn std::error::Error>> {
         let output = Command::new("schtasks")
-            .args(&["/delete", "/tn", TASK_NAME, "/f"])
+            .args(["/delete", "/tn", TASK_NAME, "/f"])
             .output()?;
 
         if !output.status.success() {

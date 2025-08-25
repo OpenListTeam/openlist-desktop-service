@@ -466,7 +466,7 @@ fn remove_task_scheduler_fallback() -> Result<(), Box<dyn std::error::Error>> {
     println!("Removing Task Scheduler fallback...");
 
     let check_output = std::process::Command::new("schtasks")
-        .args(&["/query", "/tn", TASK_NAME])
+        .args(["/query", "/tn", TASK_NAME])
         .output()?;
 
     if !check_output.status.success() {
@@ -475,7 +475,7 @@ fn remove_task_scheduler_fallback() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let output = std::process::Command::new("schtasks")
-        .args(&["/delete", "/tn", TASK_NAME, "/f"])
+        .args(["/delete", "/tn", TASK_NAME, "/f"])
         .output()?;
 
     if output.status.success() {

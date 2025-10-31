@@ -42,30 +42,74 @@ fn get_user_data_dir() -> Option<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        // Try to get the actual logged-in user's APPDATA path
-        // This works even when running as SYSTEM service
-        use windows::Win32::System::Com::{
-            COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+        // Get the actual logged-in user's APPDATA path
+        // Use WTS API to find active user session and expand environment variables in that context
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::System::Environment::ExpandEnvironmentStringsForUserW;
+        use windows::Win32::System::RemoteDesktop::{
+            WTS_CURRENT_SERVER_HANDLE, WTS_SESSION_INFOW, WTSActive, WTSEnumerateSessionsW,
+            WTSFreeMemory, WTSQueryUserToken,
         };
-        use windows::Win32::UI::Shell::{
-            FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
-        };
+        use windows::core::PWSTR;
 
         unsafe {
-            // Initialize COM
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let mut session_info_ptr = std::ptr::null_mut();
+            let mut session_count = 0u32;
 
-            let result = SHGetKnownFolderPath(&FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, None)
+            // Enumerate all sessions to find active user session
+            if WTSEnumerateSessionsW(
+                Some(WTS_CURRENT_SERVER_HANDLE),
+                0,
+                1,
+                &mut session_info_ptr,
+                &mut session_count,
+            )
+            .is_ok()
+            {
+                let sessions = std::slice::from_raw_parts(
+                    session_info_ptr as *const WTS_SESSION_INFOW,
+                    session_count as usize,
+                );
+
+                // Find the first active session
+                for session in sessions {
+                    if session.State == WTSActive {
+                        let mut token = HANDLE::default();
+
+                        // Get user token for this session
+                        if WTSQueryUserToken(session.SessionId, &mut token).is_ok() {
+                            // Expand %APPDATA% in the context of this user
+                            let template = "%APPDATA%\\OpenList Desktop\0";
+                            let template_wide: Vec<u16> = template.encode_utf16().collect();
+                            let mut buffer = vec![0u16; 512];
+
+                            let result = ExpandEnvironmentStringsForUserW(
+                                Some(token),
+                                PWSTR(template_wide.as_ptr() as *mut u16),
+                                &mut buffer,
+                            );
+
+                            let _ = windows::Win32::Foundation::CloseHandle(token);
+
+                            if result.is_ok() {
+                                // Find the null terminator
+                                if let Some(null_pos) = buffer.iter().position(|&c| c == 0) {
+                                    let path_str = String::from_utf16_lossy(&buffer[..null_pos]);
+                                    WTSFreeMemory(session_info_ptr as _);
+                                    return Some(PathBuf::from(path_str));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                WTSFreeMemory(session_info_ptr as _);
+            }
+
+            // Fallback: try environment variable (works for non-service context)
+            std::env::var("APPDATA")
                 .ok()
-                .and_then(|path_ptr| {
-                    let path = path_ptr.to_string().ok();
-                    CoTaskMemFree(Some(path_ptr.0 as _));
-                    path
-                })
-                .map(|path| PathBuf::from(path).join("OpenList Desktop"));
-
-            CoUninitialize();
-            result
+                .map(|appdata| PathBuf::from(appdata).join("OpenList Desktop"))
         }
     }
 }

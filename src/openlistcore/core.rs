@@ -134,7 +134,30 @@ impl CoreManager {
 
         for config in configs {
             processes.insert(config.id.clone(), config.clone());
-            runtime_states.insert(config.id.clone(), ProcessRuntime::default());
+            
+            // Initialize runtime state and verify process existence
+            let runtime = ProcessRuntime::default();
+            
+            // Check if previously tracked process is still running
+            if let Some(last_pid_info) = std::env::var(format!("PROCESS_{}_PID", config.id)).ok() {
+                if let Ok(pid) = last_pid_info.parse::<i32>() {
+                    if is_process_running(pid) {
+                        info!(
+                            "Process {} ({}) is still running with PID: {}",
+                            config.name, config.id, pid
+                        );
+                        runtime.running_pid.store(pid, Ordering::Relaxed);
+                        runtime.is_running.store(true, Ordering::Relaxed);
+                    } else {
+                        info!(
+                            "Process {} ({}) with PID {} is no longer running, resetting state",
+                            config.name, config.id, pid
+                        );
+                    }
+                }
+            }
+            
+            runtime_states.insert(config.id.clone(), runtime);
             info!(
                 "Loaded process configuration: {} ({})",
                 config.name, config.id
@@ -461,6 +484,9 @@ impl CoreManager {
 
         if pid <= 0 {
             warn!("Process {} is not running", config.name);
+            runtime.is_running.store(false, Ordering::Relaxed);
+            runtime.running_pid.store(INVALID_PID, Ordering::Relaxed);
+            *runtime.started_at.lock() = None;
             return Ok(());
         }
 

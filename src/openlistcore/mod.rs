@@ -5,7 +5,9 @@ mod process;
 
 use self::http_api::run_ipc_server;
 use log::{error, info};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use tokio::runtime::Runtime;
+use tokio::sync::broadcast;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use crate::utils;
@@ -41,67 +43,69 @@ async fn auto_start_core() {
 }
 
 pub async fn run_service() -> anyhow::Result<()> {
+    let shutdown_signal = Arc::new(AtomicBool::new(false));
+    let (shutdown_tx, _) = broadcast::channel(1);
+
     // Register signal handlers for graceful shutdown on Unix-like systems
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use tokio::signal::unix::{SignalKind, signal};
 
-        let mut sigterm = signal(SignalKind::terminate())?;
-        let mut sigint = signal(SignalKind::interrupt())?;
+        let shutdown_signal_clone = shutdown_signal.clone();
+        let shutdown_tx_clone = shutdown_tx.clone();
 
         tokio::spawn(async move {
+            let mut sigterm = signal(SignalKind::terminate()).expect("Failed to register SIGTERM");
+            let mut sigint = signal(SignalKind::interrupt()).expect("Failed to register SIGINT");
+
             tokio::select! {
                 _ = sigterm.recv() => {
-                    info!("Received SIGTERM, shutting down all managed processes...");
+                    info!("Received SIGTERM, initiating graceful shutdown...");
                 }
                 _ = sigint.recv() => {
-                    info!("Received SIGINT, shutting down all managed processes...");
+                    info!("Received SIGINT, initiating graceful shutdown...");
                 }
             }
 
-            use self::core::CORE_MANAGER;
-            let mut core_manager = CORE_MANAGER.lock();
-            if let Err(e) = core_manager.shutdown_all_processes() {
-                error!("Failed to shutdown all processes during signal handling: {e}");
-            }
-
-            std::process::exit(0);
+            shutdown_signal_clone.store(true, Ordering::SeqCst);
+            let _ = shutdown_tx_clone.send(());
         });
     }
 
-    // Register Windows service control handler
+    // Register Windows service control handler with proper shutdown mechanism
     #[cfg(windows)]
-    let status_handle = service_control_handler::register(
-        "openlist_desktop_service",
-        |event| -> ServiceControlHandlerResult {
-            match event {
-                ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-                ServiceControl::Stop => {
-                    info!("Service stop requested, shutting down all managed processes...");
-                    {
-                        use self::core::CORE_MANAGER;
-                        let mut core_manager = CORE_MANAGER.lock();
-                        if let Err(e) = core_manager.shutdown_all_processes() {
-                            error!("Failed to shutdown all processes during service stop: {e}");
-                        }
-                    }
+    let status_handle = {
+        let shutdown_signal_clone = shutdown_signal.clone();
+        let shutdown_tx_clone = shutdown_tx.clone();
 
-                    std::process::exit(0);
+        let status_handle = service_control_handler::register(
+            "openlist_desktop_service",
+            move |event| -> ServiceControlHandlerResult {
+                match event {
+                    ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+                    ServiceControl::Stop => {
+                        info!("Service stop requested, initiating graceful shutdown...");
+                        shutdown_signal_clone.store(true, Ordering::SeqCst);
+                        let _ = shutdown_tx_clone.send(());
+                        ServiceControlHandlerResult::NoError
+                    }
+                    _ => ServiceControlHandlerResult::NotImplemented,
                 }
-                _ => ServiceControlHandlerResult::NotImplemented,
-            }
-        },
-    )?;
-    #[cfg(windows)]
-    status_handle.set_service_status(ServiceStatus {
-        service_type: SERVICE_TYPE,
-        current_state: ServiceState::Running,
-        controls_accepted: ServiceControlAccept::STOP,
-        exit_code: ServiceExitCode::Win32(0),
-        checkpoint: 0,
-        wait_hint: Duration::default(),
-        process_id: None,
-    })?;
+            },
+        )?;
+
+        status_handle.set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Running,
+            controls_accepted: ServiceControlAccept::STOP,
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        })?;
+
+        status_handle
+    };
 
     info!("Starting Service - HTTP API mode");
 
@@ -110,29 +114,60 @@ pub async fn run_service() -> anyhow::Result<()> {
         auto_start_core().await;
     });
 
-    if let Err(err) = run_ipc_server().await {
-        error!("HTTP API server error: {err}");
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    let server_handle = tokio::spawn(async move {
+        if let Err(err) = run_ipc_server().await {
+            error!("HTTP API server error: {err}");
+        }
+    });
+
+    // Wait for shutdown signal
+    let _ = shutdown_rx.recv().await;
+    info!("Shutdown signal received, cleaning up...");
+
+    // Shutdown all managed processes
+    {
+        use self::core::CORE_MANAGER;
+        let mut core_manager = CORE_MANAGER.lock();
+        if let Err(e) = core_manager.shutdown_all_processes() {
+            error!("Failed to shutdown all processes: {e}");
+        } else {
+            info!("All managed processes shut down successfully");
+        }
     }
 
+    // Abort server task
+    server_handle.abort();
+    info!("HTTP server stopped");
+
+    // Update service status to Stopped on Windows
+    #[cfg(windows)]
+    {
+        info!("Setting Windows service status to Stopped");
+        if let Err(e) = status_handle.set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        }) {
+            error!("Failed to set service status to Stopped: {e}");
+        } else {
+            info!("Service status updated to Stopped successfully");
+        }
+    }
+
+    info!("Service shutdown completed");
     Ok(())
 }
 
 #[cfg(target_os = "windows")]
 pub fn stop_service() -> Result<()> {
-    let status_handle = service_control_handler::register("openlist_desktop_service", |_| {
-        ServiceControlHandlerResult::NoError
-    })?;
-
-    status_handle.set_service_status(ServiceStatus {
-        service_type: SERVICE_TYPE,
-        current_state: ServiceState::Stopped,
-        controls_accepted: ServiceControlAccept::empty(),
-        exit_code: ServiceExitCode::Win32(0),
-        checkpoint: 0,
-        wait_hint: Duration::default(),
-        process_id: None,
-    })?;
-
+    info!("stop_service called - this should be handled by service control handler");
+    // The service stop is now handled gracefully in run_service()
+    // This function is kept for compatibility but should not be called directly
     Ok(())
 }
 

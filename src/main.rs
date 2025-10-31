@@ -16,8 +16,41 @@ use std::path::PathBuf;
 
 const SERVICE_NAME: &str = "OpenList Desktop Service";
 
+// Get user data directory for log files, consistent with desktop main repo
+fn get_user_data_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var("HOME").ok().map(|home| {
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("io.github.openlistteam.openlist.service.bundle")
+                .join("Contents")
+                .join("MacOS")
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var("HOME").ok().map(|home| {
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("OpenList Desktop")
+        })
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("APPDATA").ok().map(|appdata| {
+            PathBuf::from(appdata).join("OpenList Desktop")
+        })
+    }
+}
+
 fn setup_log_file() -> Result<(), Box<dyn std::error::Error>> {
     let log_paths = [
+        get_user_data_dir().map(|dir| dir.join("openlist-desktop-service.log")),
         std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(|p| p.join("openlist-desktop-service.log"))),

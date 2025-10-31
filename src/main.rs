@@ -23,10 +23,8 @@ fn get_user_data_dir() -> Option<PathBuf> {
         std::env::var("HOME").ok().map(|home| {
             PathBuf::from(home)
                 .join("Library")
-                .join("Application Support")
-                .join("io.github.openlistteam.openlist.service.bundle")
-                .join("Contents")
-                .join("MacOS")
+                .join("Logs")
+                .join("OpenList Desktop")
         })
     }
 
@@ -116,7 +114,7 @@ fn get_user_data_dir() -> Option<PathBuf> {
 
 fn setup_log_file() -> Result<(), Box<dyn std::error::Error>> {
     let log_paths = [
-        get_user_data_dir().map(|dir| dir.join("openlist-desktop-service.log")),
+        get_user_data_dir().map(|dir| dir.join("logs").join("openlist-desktop-service.log")),
         std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(|p| p.join("openlist-desktop-service.log"))),

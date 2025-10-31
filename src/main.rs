@@ -42,9 +42,9 @@ fn get_user_data_dir() -> Option<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        std::env::var("APPDATA").ok().map(|appdata| {
-            PathBuf::from(appdata).join("OpenList Desktop")
-        })
+        std::env::var("APPDATA")
+            .ok()
+            .map(|appdata| PathBuf::from(appdata).join("OpenList Desktop"))
     }
 }
 

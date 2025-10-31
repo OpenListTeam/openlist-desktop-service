@@ -683,14 +683,14 @@ impl CoreManager {
         }
 
         // Check max restart attempts limit
-        if let Some(max_attempts) = config.max_restart_attempts {
-            if restart_count >= max_attempts {
-                warn!(
-                    "Process {} has reached max restart attempts ({}/{})",
-                    config.name, restart_count, max_attempts
-                );
-                return false;
-            }
+        if let Some(max_attempts) = config.max_restart_attempts
+            && restart_count >= max_attempts
+        {
+            warn!(
+                "Process {} has reached max restart attempts ({}/{})",
+                config.name, restart_count, max_attempts
+            );
+            return false;
         }
 
         // Check restart window
@@ -704,14 +704,14 @@ impl CoreManager {
                 .filter(|&&timestamp| timestamp >= window_start)
                 .count();
 
-            if let Some(max_attempts) = config.max_restart_attempts {
-                if restarts_in_window >= max_attempts as usize {
-                    warn!(
-                        "Process {} has exceeded restart limit ({}/{}) within {}min window",
-                        config.name, restarts_in_window, max_attempts, window_minutes
-                    );
-                    return false;
-                }
+            if let Some(max_attempts) = config.max_restart_attempts
+                && restarts_in_window >= max_attempts as usize
+            {
+                warn!(
+                    "Process {} has exceeded restart limit ({}/{}) within {}min window",
+                    config.name, restarts_in_window, max_attempts, window_minutes
+                );
+                return false;
             }
         }
 

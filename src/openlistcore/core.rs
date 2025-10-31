@@ -134,11 +134,11 @@ impl CoreManager {
 
         for config in configs {
             processes.insert(config.id.clone(), config.clone());
-            
+
             // Initialize runtime state with clean state
             // Process state will be determined by actual process checks
             let runtime = ProcessRuntime::default();
-            
+
             runtime_states.insert(config.id.clone(), runtime);
             info!(
                 "Loaded process configuration: {} ({})",

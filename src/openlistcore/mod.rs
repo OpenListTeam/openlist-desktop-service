@@ -5,7 +5,10 @@ mod process;
 
 use self::http_api::run_ipc_server;
 use log::{error, info};
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
 
@@ -44,10 +47,10 @@ async fn auto_start_core() {
 
 fn ensure_config_loaded() {
     use self::core::CORE_MANAGER;
-    
+
     info!("Ensuring process configurations are loaded...");
     let mut core_manager = CORE_MANAGER.lock();
-    
+
     if let Err(e) = core_manager.load_config() {
         error!("Failed to load process configurations: {e}");
     }
@@ -153,7 +156,7 @@ pub async fn run_service() -> anyhow::Result<()> {
     // Give server more time to gracefully finish pending requests
     info!("Waiting for HTTP server to finish pending requests...");
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    
+
     // Abort server task
     server_handle.abort();
     info!("HTTP server stopped");

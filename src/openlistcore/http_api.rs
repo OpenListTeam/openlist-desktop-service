@@ -401,7 +401,7 @@ pub async fn run_ipc_server() -> Result<()> {
     let app = create_router(app_state);
 
     let addr = format!("{host}:{port}");
-    
+
     // Retry binding with exponential backoff in case port is still in use
     let mut retry_count = 0;
     let max_retries = 5;

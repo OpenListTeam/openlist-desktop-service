@@ -401,9 +401,29 @@ pub async fn run_ipc_server() -> Result<()> {
     let app = create_router(app_state);
 
     let addr = format!("{host}:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .with_context(|| format!("Failed to bind to {addr}"))?;
+    
+    // Retry binding with exponential backoff in case port is still in use
+    let mut retry_count = 0;
+    let max_retries = 5;
+    let listener = loop {
+        match tokio::net::TcpListener::bind(&addr).await {
+            Ok(listener) => break listener,
+            Err(e) if retry_count < max_retries => {
+                retry_count += 1;
+                let wait_secs = 2u64.pow(retry_count);
+                warn!(
+                    "Failed to bind to {addr} (attempt {}/{max_retries}): {}. Retrying in {wait_secs}s...",
+                    retry_count, e
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to bind to {addr} after {max_retries} attempts: {e}"
+                ));
+            }
+        }
+    };
     info!("HTTP API server started successfully, listening on: {addr}");
     info!("API Key: {api_key}");
     info!("Environment variables configuration:");

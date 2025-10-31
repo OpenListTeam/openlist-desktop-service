@@ -41,46 +41,53 @@ async fn auto_start_core() {
 }
 
 pub async fn run_service() -> anyhow::Result<()> {
+    // Register signal handlers for graceful shutdown on Unix-like systems
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sigint = signal(SignalKind::interrupt())?;
+
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    info!("Received SIGTERM, shutting down all managed processes...");
+                }
+                _ = sigint.recv() => {
+                    info!("Received SIGINT, shutting down all managed processes...");
+                }
+            }
+
+            use self::core::CORE_MANAGER;
+            let mut core_manager = CORE_MANAGER.lock();
+            if let Err(e) = core_manager.shutdown_all_processes() {
+                error!("Failed to shutdown all processes during signal handling: {e}");
+            }
+
+            std::process::exit(0);
+        });
+    }
+
+    // Register Windows service control handler
     #[cfg(windows)]
     let status_handle = service_control_handler::register(
         "openlist_desktop_service",
-        move |event| -> ServiceControlHandlerResult {
+        |event| -> ServiceControlHandlerResult {
             match event {
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
                 ServiceControl::Stop => {
-                    // Set service to STOP_PENDING before cleanup
-                    let _ = status_handle.set_service_status(ServiceStatus {
-                        service_type: SERVICE_TYPE,
-                        current_state: ServiceState::StopPending,
-                        controls_accepted: ServiceControlAccept::empty(),
-                        exit_code: ServiceExitCode::Win32(0),
-                        checkpoint: 0,
-                        wait_hint: Duration::from_secs(10),
-                        process_id: None,
-                    });
-
-                    // Shutdown all managed processes before exit
                     info!("Service stop requested, shutting down all managed processes...");
                     {
+                        use self::core::CORE_MANAGER;
                         let mut core_manager = CORE_MANAGER.lock();
                         if let Err(e) = core_manager.shutdown_all_processes() {
                             error!("Failed to shutdown all processes during service stop: {e}");
                         }
                     }
 
-                    // Set service to STOPPED and exit
-                    let _ = status_handle.set_service_status(ServiceStatus {
-                        service_type: SERVICE_TYPE,
-                        current_state: ServiceState::Stopped,
-                        controls_accepted: ServiceControlAccept::empty(),
-                        exit_code: ServiceExitCode::Win32(0),
-                        checkpoint: 0,
-                        wait_hint: Duration::default(),
-                        process_id: None,
-                    });
-
                     std::process::exit(0);
-                },
+                }
                 _ => ServiceControlHandlerResult::NotImplemented,
             }
         },

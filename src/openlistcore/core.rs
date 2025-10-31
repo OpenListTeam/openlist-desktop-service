@@ -113,7 +113,7 @@ impl CoreManager {
             .with_context(|| format!("Failed to open config file: {config_path:?}"))?;
 
         let reader = BufReader::new(file);
-        
+
         // Parse configuration with fallback for empty or malformed files
         let configs: Vec<ProcessConfig> = match serde_json::from_reader(reader) {
             Ok(configs) => configs,

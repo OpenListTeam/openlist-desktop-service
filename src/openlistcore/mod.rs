@@ -47,7 +47,40 @@ pub async fn run_service() -> anyhow::Result<()> {
         move |event| -> ServiceControlHandlerResult {
             match event {
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-                ServiceControl::Stop => std::process::exit(0),
+                ServiceControl::Stop => {
+                    // Set service to STOP_PENDING before cleanup
+                    let _ = status_handle.set_service_status(ServiceStatus {
+                        service_type: SERVICE_TYPE,
+                        current_state: ServiceState::StopPending,
+                        controls_accepted: ServiceControlAccept::empty(),
+                        exit_code: ServiceExitCode::Win32(0),
+                        checkpoint: 0,
+                        wait_hint: Duration::from_secs(10),
+                        process_id: None,
+                    });
+
+                    // Shutdown all managed processes before exit
+                    info!("Service stop requested, shutting down all managed processes...");
+                    {
+                        let mut core_manager = CORE_MANAGER.lock();
+                        if let Err(e) = core_manager.shutdown_all_processes() {
+                            error!("Failed to shutdown all processes during service stop: {e}");
+                        }
+                    }
+
+                    // Set service to STOPPED and exit
+                    let _ = status_handle.set_service_status(ServiceStatus {
+                        service_type: SERVICE_TYPE,
+                        current_state: ServiceState::Stopped,
+                        controls_accepted: ServiceControlAccept::empty(),
+                        exit_code: ServiceExitCode::Win32(0),
+                        checkpoint: 0,
+                        wait_hint: Duration::default(),
+                        process_id: None,
+                    });
+
+                    std::process::exit(0);
+                },
                 _ => ServiceControlHandlerResult::NotImplemented,
             }
         },

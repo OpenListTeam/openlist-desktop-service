@@ -100,9 +100,10 @@ impl CoreManager {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("Failed to create config directory: {parent:?}"))?;
             }
-            File::create(&config_path)
+            // Initialize with empty JSON array instead of empty file
+            std::fs::write(&config_path, "[]")
                 .with_context(|| format!("Failed to create config file: {config_path:?}"))?;
-            info!("Loading process configurations from {config_path:?}");
+            info!("Created new config file at {config_path:?} with empty configuration");
             return Ok(());
         }
 
@@ -112,8 +113,20 @@ impl CoreManager {
             .with_context(|| format!("Failed to open config file: {config_path:?}"))?;
 
         let reader = BufReader::new(file);
-        let configs: Vec<ProcessConfig> = serde_json::from_reader(reader)
-            .with_context(|| format!("Failed to parse config file: {config_path:?}"))?;
+        
+        // Parse configuration with fallback for empty or malformed files
+        let configs: Vec<ProcessConfig> = match serde_json::from_reader(reader) {
+            Ok(configs) => configs,
+            Err(e) => {
+                warn!("Failed to parse config file: {e}, treating as empty configuration");
+                warn!("Config file may be empty or corrupted, starting with zero processes");
+                // Re-initialize with valid empty JSON array
+                if let Err(write_err) = std::fs::write(&config_path, "[]") {
+                    error!("Failed to reset corrupted config file: {write_err}");
+                }
+                Vec::new()
+            }
+        };
 
         let process_manager = self.process_manager.inner.lock();
         let mut processes = process_manager.processes.lock();

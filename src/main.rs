@@ -42,9 +42,31 @@ fn get_user_data_dir() -> Option<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        std::env::var("APPDATA")
-            .ok()
-            .map(|appdata| PathBuf::from(appdata).join("OpenList Desktop"))
+        // Try to get the actual logged-in user's APPDATA path
+        // This works even when running as SYSTEM service
+        use windows::Win32::System::Com::{
+            COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+        };
+        use windows::Win32::UI::Shell::{
+            FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+        };
+
+        unsafe {
+            // Initialize COM
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+
+            let result = SHGetKnownFolderPath(&FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, None)
+                .ok()
+                .and_then(|path_ptr| {
+                    let path = path_ptr.to_string().ok();
+                    CoTaskMemFree(Some(path_ptr.0 as _));
+                    path
+                })
+                .map(|path| PathBuf::from(path).join("OpenList Desktop"));
+
+            CoUninitialize();
+            result
+        }
     }
 }
 

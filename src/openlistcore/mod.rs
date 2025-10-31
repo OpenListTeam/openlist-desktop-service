@@ -3,6 +3,7 @@ mod data;
 mod http_api;
 mod process;
 
+use self::core::CORE_MANAGER;
 use self::http_api::run_ipc_server;
 use log::{error, info};
 use std::sync::{
@@ -129,6 +130,29 @@ pub async fn run_service() -> anyhow::Result<()> {
     tokio::spawn(async {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         auto_start_core().await;
+    });
+
+    // Start process monitoring loop for auto-restart
+    let shutdown_signal_monitor = shutdown_signal.clone();
+    tokio::spawn(async move {
+        info!("Starting process monitoring loop for auto-restart");
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if shutdown_signal_monitor.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    
+                    let mut core_manager = CORE_MANAGER.lock();
+                    core_manager.monitor_processes();
+                }
+                else => break,
+            }
+        }
+        
+        info!("Process monitoring loop stopped");
     });
 
     let mut shutdown_rx = shutdown_tx.subscribe();

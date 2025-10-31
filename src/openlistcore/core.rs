@@ -220,6 +220,10 @@ impl CoreManager {
             auto_restart: request.auto_restart.unwrap_or(false),
             auto_start: request.auto_start.unwrap_or(false),
             run_as_admin: request.run_as_admin.unwrap_or(false),
+            max_restart_attempts: request.max_restart_attempts,
+            restart_delay_seconds: request.restart_delay_seconds,
+            restart_backoff_multiplier: request.restart_backoff_multiplier,
+            restart_window_minutes: request.restart_window_minutes,
             created_at: timestamp,
             updated_at: timestamp,
         };
@@ -287,6 +291,18 @@ impl CoreManager {
         }
         if let Some(run_as_admin) = request.run_as_admin {
             config.run_as_admin = run_as_admin;
+        }
+        if let Some(max_restart_attempts) = request.max_restart_attempts {
+            config.max_restart_attempts = Some(max_restart_attempts);
+        }
+        if let Some(restart_delay_seconds) = request.restart_delay_seconds {
+            config.restart_delay_seconds = Some(restart_delay_seconds);
+        }
+        if let Some(restart_backoff_multiplier) = request.restart_backoff_multiplier {
+            config.restart_backoff_multiplier = Some(restart_backoff_multiplier);
+        }
+        if let Some(restart_window_minutes) = request.restart_window_minutes {
+            config.restart_window_minutes = Some(restart_window_minutes);
         }
         config.updated_at = get_current_timestamp();
 
@@ -630,5 +646,242 @@ impl CoreManager {
             "total_processes": processes.len(),
             "running_processes": processes.iter().filter(|p| p.is_running).count(),
         }))
+    }
+
+    // Auto-restart monitoring and management
+
+    fn should_restart_process(
+        config: &ProcessConfig,
+        runtime: &ProcessRuntime,
+        current_time: u64,
+    ) -> bool {
+        if !config.auto_restart {
+            return false;
+        }
+
+        let restart_count = runtime.restart_count.load(Ordering::Relaxed) as u32;
+
+        // Check max restart attempts limit
+        if let Some(max_attempts) = config.max_restart_attempts {
+            if restart_count >= max_attempts {
+                warn!(
+                    "Process {} has reached max restart attempts ({}/{})",
+                    config.name, restart_count, max_attempts
+                );
+                return false;
+            }
+        }
+
+        // Check restart window
+        if let Some(window_minutes) = config.restart_window_minutes {
+            let restart_history = runtime.restart_history.lock();
+            let window_seconds = (window_minutes as u64) * 60;
+            let window_start = current_time.saturating_sub(window_seconds);
+
+            let restarts_in_window = restart_history
+                .iter()
+                .filter(|&&timestamp| timestamp >= window_start)
+                .count();
+
+            if let Some(max_attempts) = config.max_restart_attempts {
+                if restarts_in_window >= max_attempts as usize {
+                    warn!(
+                        "Process {} has exceeded restart limit ({}/{}) within {}min window",
+                        config.name, restarts_in_window, max_attempts, window_minutes
+                    );
+                    return false;
+                }
+            }
+        }
+
+        // Check cooldown period since last restart
+        if let Some(last_restart) = *runtime.last_restart_at.lock() {
+            let delay_seconds = config.restart_delay_seconds.unwrap_or(5) as u64;
+            let restart_count = runtime.restart_count.load(Ordering::Relaxed) as u32;
+            
+            // Apply backoff multiplier if configured
+            let effective_delay = if let Some(multiplier) = config.restart_backoff_multiplier {
+                let backoff_factor = multiplier.powf(restart_count.saturating_sub(1) as f32);
+                (delay_seconds as f32 * backoff_factor).min(300.0) as u64 // Cap at 5 minutes
+            } else {
+                delay_seconds
+            };
+
+            let time_since_restart = current_time.saturating_sub(last_restart);
+            if time_since_restart < effective_delay {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn attempt_restart(&mut self, id: &str) -> Result<()> {
+        info!("Attempting to restart process: {}", id);
+
+        let process_manager = self.process_manager.inner.lock();
+        let processes = process_manager.processes.lock();
+        let runtime_states = process_manager.runtime_states.lock();
+
+        let config = processes
+            .get(id)
+            .ok_or_else(|| anyhow!("Process not found: {}", id))?;
+
+        let runtime = runtime_states
+            .get(id)
+            .ok_or_else(|| anyhow!("Runtime state not found: {}", id))?;
+
+        // Increment restart counter
+        let new_restart_count = runtime.restart_count.fetch_add(1, Ordering::Relaxed) + 1;
+        info!(
+            "Restarting process {} (attempt {}/{})",
+            config.name,
+            new_restart_count,
+            config
+                .max_restart_attempts
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| "unlimited".to_string())
+        );
+
+        let current_time = get_current_timestamp();
+
+        // Update restart history
+        {
+            let mut history = runtime.restart_history.lock();
+            history.push(current_time);
+            
+            // Keep only recent history (last 100 restarts or within window)
+            let history_len = history.len();
+            if history_len > 100 {
+                history.drain(0..history_len - 100);
+            }
+        }
+
+        *runtime.last_restart_at.lock() = Some(current_time);
+
+        // Clean up old process if still running
+        let old_pid = runtime.running_pid.load(Ordering::Relaxed);
+        if old_pid > 0 && is_process_running(old_pid) {
+            warn!("Process {} still running with PID {}, terminating", config.name, old_pid);
+            if let Err(e) = process::kill_process(old_pid as u32) {
+                error!("Failed to kill old process: {}", e);
+            }
+        }
+
+        // Reset runtime state
+        runtime.is_running.store(false, Ordering::Relaxed);
+        runtime.running_pid.store(-1, Ordering::Relaxed);
+
+        drop(processes);
+        drop(runtime_states);
+        drop(process_manager);
+
+        // Start the process
+        if let Err(e) = self.start_process(id) {
+            error!("Failed to restart process {}: {}", id, e);
+            return Err(e);
+        }
+
+        info!("Process {} restarted successfully", id);
+        Ok(())
+    }
+
+    pub fn restart_process(&mut self, id: &str) -> Result<()> {
+        info!("Manual restart requested for process: {}", id);
+
+        let process_manager = self.process_manager.inner.lock();
+        let runtime_states = process_manager.runtime_states.lock();
+
+        // Reset restart counter for manual restart
+        if let Some(runtime) = runtime_states.get(id) {
+            runtime.restart_count.store(0, Ordering::Relaxed);
+            runtime.restart_history.lock().clear();
+        }
+
+        drop(runtime_states);
+        drop(process_manager);
+
+        // Stop the process first
+        if let Err(e) = self.stop_process(id) {
+            warn!("Failed to stop process before restart: {}", e);
+        }
+
+        // Small delay to ensure clean shutdown
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // Start the process
+        self.start_process(id)
+    }
+
+    pub fn monitor_processes(&mut self) {
+        let process_ids: Vec<String> = {
+            let process_manager = self.process_manager.inner.lock();
+            let processes = process_manager.processes.lock();
+            processes.keys().cloned().collect()
+        };
+
+        let current_time = get_current_timestamp();
+
+        for id in process_ids {
+            let should_check = {
+                let process_manager = self.process_manager.inner.lock();
+                let processes = process_manager.processes.lock();
+                let runtime_states = process_manager.runtime_states.lock();
+
+                if let (Some(config), Some(runtime)) = (processes.get(&id), runtime_states.get(&id)) {
+                    if !config.auto_restart {
+                        continue;
+                    }
+
+                    let pid = runtime.running_pid.load(Ordering::Relaxed);
+                    
+                    // Check if process is expected to be running but isn't
+                    let was_running = runtime.is_running.load(Ordering::Relaxed);
+                    let is_actually_running = pid > 0 && is_process_running(pid);
+
+                    if was_running && !is_actually_running {
+                        // Process crashed, consider restart
+                        Some((config.clone(), pid))
+                    } else if !is_actually_running && pid > 0 {
+                        // Process stopped unexpectedly
+                        Some((config.clone(), pid))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+
+            if let Some((config, old_pid)) = should_check {
+                info!(
+                    "Process {} (PID: {}) is not running, checking restart policy",
+                    config.name, old_pid
+                );
+
+                let process_manager = self.process_manager.inner.lock();
+                let runtime_states = process_manager.runtime_states.lock();
+
+                if let Some(runtime) = runtime_states.get(&id) {
+                    // Mark as not running
+                    runtime.is_running.store(false, Ordering::Relaxed);
+
+                    if Self::should_restart_process(&config, runtime, current_time) {
+                        drop(runtime_states);
+                        drop(process_manager);
+
+                        info!("Auto-restarting process: {}", config.name);
+                        if let Err(e) = self.attempt_restart(&id) {
+                            error!("Failed to auto-restart process {}: {}", config.name, e);
+                        }
+                    } else {
+                        info!(
+                            "Process {} will not be restarted (policy check failed)",
+                            config.name
+                        );
+                    }
+                }
+            }
+        }
     }
 }

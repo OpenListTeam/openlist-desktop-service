@@ -293,6 +293,25 @@ async fn stop_process_api(
     }
 }
 
+async fn restart_process_api(
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    info!("Handling POST /api/v1/processes/{id}/restart request");
+
+    let mut core_manager = CORE_MANAGER.lock();
+
+    match core_manager.restart_process(&id) {
+        Ok(_) => {
+            info!("Process restarted successfully: {id}");
+            success_response("Process restarted successfully").into_response()
+        }
+        Err(err) => {
+            error!("Failed to restart process {id}: {err}");
+            error_response(format!("Failed to restart process: {err}")).into_response()
+        }
+    }
+}
+
 async fn get_process_logs_api(
     axum::extract::Path(id): axum::extract::Path<String>,
     Query(params): Query<LogQueryParams>,
@@ -367,6 +386,7 @@ fn create_router(app_state: AppState) -> Router {
         .route("/api/v1/processes/:id", delete(delete_process_api))
         .route("/api/v1/processes/:id/start", post(start_process_api))
         .route("/api/v1/processes/:id/stop", post(stop_process_api))
+        .route("/api/v1/processes/:id/restart", post(restart_process_api))
         .route("/api/v1/processes/:id/logs", get(get_process_logs_api))
         .layer(middleware::from_fn_with_state(
             app_state.clone(),
@@ -450,6 +470,7 @@ pub async fn run_ipc_server() -> Result<()> {
     info!("  DELETE /api/v1/processes/:id - Delete process");
     info!("  POST   /api/v1/processes/:id/start - Start process");
     info!("  POST   /api/v1/processes/:id/stop - Stop process");
+    info!("  POST   /api/v1/processes/:id/restart - Restart process (resets restart counter)");
     info!("  GET    /api/v1/processes/:id/logs - Get process logs");
     info!("");
     info!("Usage examples:");

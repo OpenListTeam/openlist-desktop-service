@@ -18,6 +18,10 @@ pub struct ProcessConfig {
     pub auto_restart: bool,
     pub auto_start: bool,
     pub run_as_admin: bool,
+    pub max_restart_attempts: Option<u32>,
+    pub restart_delay_seconds: Option<u32>,
+    pub restart_backoff_multiplier: Option<f32>,
+    pub restart_window_minutes: Option<u32>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -45,6 +49,10 @@ pub struct CreateProcessRequest {
     pub auto_restart: Option<bool>,
     pub auto_start: Option<bool>,
     pub run_as_admin: Option<bool>,
+    pub max_restart_attempts: Option<u32>,
+    pub restart_delay_seconds: Option<u32>,
+    pub restart_backoff_multiplier: Option<f32>,
+    pub restart_window_minutes: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -58,6 +66,10 @@ pub struct UpdateProcessRequest {
     pub auto_restart: Option<bool>,
     pub auto_start: Option<bool>,
     pub run_as_admin: Option<bool>,
+    pub max_restart_attempts: Option<u32>,
+    pub restart_delay_seconds: Option<u32>,
+    pub restart_backoff_multiplier: Option<f32>,
+    pub restart_window_minutes: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -82,6 +94,8 @@ pub struct ProcessRuntime {
     pub started_at: Arc<Mutex<Option<u64>>>,
     pub restart_count: Arc<AtomicI32>,
     pub last_exit_code: Arc<AtomicI32>,
+    pub last_restart_at: Arc<Mutex<Option<u64>>>,
+    pub restart_history: Arc<Mutex<Vec<u64>>>,
 }
 
 impl Default for ProcessRuntime {
@@ -92,6 +106,8 @@ impl Default for ProcessRuntime {
             started_at: Arc::new(Mutex::new(None)),
             restart_count: Arc::new(AtomicI32::new(0)),
             last_exit_code: Arc::new(AtomicI32::new(0)),
+            last_restart_at: Arc::new(Mutex::new(None)),
+            restart_history: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }

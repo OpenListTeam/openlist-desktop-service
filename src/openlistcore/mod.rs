@@ -137,21 +137,21 @@ pub async fn run_service() -> anyhow::Result<()> {
     tokio::spawn(async move {
         info!("Starting process monitoring loop for auto-restart");
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-        
+
         loop {
             tokio::select! {
                 _ = interval.tick() => {
                     if shutdown_signal_monitor.load(Ordering::SeqCst) {
                         break;
                     }
-                    
+
                     let mut core_manager = CORE_MANAGER.lock();
                     core_manager.monitor_processes();
                 }
                 else => break,
             }
         }
-        
+
         info!("Process monitoring loop stopped");
     });
 

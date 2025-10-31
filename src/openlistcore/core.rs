@@ -719,7 +719,7 @@ impl CoreManager {
         if let Some(last_restart) = *runtime.last_restart_at.lock() {
             let delay_seconds = config.restart_delay_seconds.unwrap_or(5) as u64;
             let restart_count = runtime.restart_count.load(Ordering::Relaxed) as u32;
-            
+
             // Apply backoff multiplier if configured
             let effective_delay = if let Some(multiplier) = config.restart_backoff_multiplier {
                 let backoff_factor = multiplier.powf(restart_count.saturating_sub(1) as f32);
@@ -770,7 +770,7 @@ impl CoreManager {
         {
             let mut history = runtime.restart_history.lock();
             history.push(current_time);
-            
+
             // Keep only recent history (last 100 restarts or within window)
             let history_len = history.len();
             if history_len > 100 {
@@ -783,7 +783,10 @@ impl CoreManager {
         // Clean up old process if still running
         let old_pid = runtime.running_pid.load(Ordering::Relaxed);
         if old_pid > 0 && is_process_running(old_pid) {
-            warn!("Process {} still running with PID {}, terminating", config.name, old_pid);
+            warn!(
+                "Process {} still running with PID {}, terminating",
+                config.name, old_pid
+            );
             if let Err(e) = process::kill_process(old_pid as u32) {
                 error!("Failed to kill old process: {}", e);
             }
@@ -849,13 +852,14 @@ impl CoreManager {
                 let processes = process_manager.processes.lock();
                 let runtime_states = process_manager.runtime_states.lock();
 
-                if let (Some(config), Some(runtime)) = (processes.get(&id), runtime_states.get(&id)) {
+                if let (Some(config), Some(runtime)) = (processes.get(&id), runtime_states.get(&id))
+                {
                     if !config.auto_restart {
                         continue;
                     }
 
                     let pid = runtime.running_pid.load(Ordering::Relaxed);
-                    
+
                     // Check if process is expected to be running but isn't
                     let was_running = runtime.is_running.load(Ordering::Relaxed);
                     let is_actually_running = pid > 0 && is_process_running(pid);

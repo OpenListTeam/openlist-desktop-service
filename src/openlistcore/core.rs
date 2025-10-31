@@ -661,6 +661,27 @@ impl CoreManager {
 
         let restart_count = runtime.restart_count.load(Ordering::Relaxed) as u32;
 
+        // Check for rapid crash loop (5+ crashes within 20 seconds)
+        {
+            let restart_history = runtime.restart_history.lock();
+            let rapid_crash_window = 20u64; // 20 seconds
+            let rapid_crash_threshold = 5usize;
+            let window_start = current_time.saturating_sub(rapid_crash_window);
+
+            let recent_crashes = restart_history
+                .iter()
+                .filter(|&&timestamp| timestamp >= window_start)
+                .count();
+
+            if recent_crashes >= rapid_crash_threshold {
+                error!(
+                    "Process {} is in rapid crash loop ({} crashes in {} seconds), stopping auto-restart until manual intervention",
+                    config.name, recent_crashes, rapid_crash_window
+                );
+                return false;
+            }
+        }
+
         // Check max restart attempts limit
         if let Some(max_attempts) = config.max_restart_attempts {
             if restart_count >= max_attempts {
